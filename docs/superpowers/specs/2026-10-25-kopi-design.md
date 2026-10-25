@@ -24,7 +24,7 @@ Apple no permite usar su implementación (Continuity) desde Android: la descubre
 - Sincronizar **texto e imágenes** en **ambas direcciones**, de forma **automática**.
 - Que el texto esté disponible para pegar en el otro equipo en **menos de 1 segundo** desde que se copia.
 - Seguir funcionando tras horas en segundo plano, y tras reiniciar el teléfono una vez reactivado Shizuku.
-- Emparejar una sola vez, escaneando un QR.
+- Emparejar sin pasos: el primer teléfono que se conecta queda vinculado (con opción de deshacer desde la Mac).
 - Mostrar siempre el estado de la conexión.
 
 ### No-objetivos (v1)
@@ -90,17 +90,17 @@ kopi/
 | Módulo | Responsabilidad | Depende de |
 |---|---|---|
 | `ClipboardWatcher` | Consulta `changeCount` cada 0,5 s, lee texto e imagen, y escribe lo recibido (el texto directo, la imagen como promesa `NSPasteboardItemDataProvider`). Recuerda el `id` de sus propias escrituras para no reenviarlas. | `NSPasteboard` |
-| `PeerServer` | `NWListener` con WebSocket y TLS 1.3 mutuo. Anuncia `_kopi._tcp` por Bonjour y acepta solo la huella del teléfono emparejado. | Network.framework, `Pairing` |
-| `Pairing` | Genera la identidad (clave P-256 y certificado autofirmado) y la guarda en el Llavero. Crea el QR y el código de un solo uso, y guarda la huella del teléfono. | CryptoKit, swift-certificates, Keychain, CoreImage |
+| `PeerServer` | `NWListener` con WebSocket y TLS 1.3 mutuo. Anuncia `_kopi._tcp` por Bonjour. Sin teléfono vinculado acepta cualquier certificado y vincula al primero que envía `hello`; vinculado, acepta solo su huella. | Network.framework, `Pairing` |
+| `Pairing` | Genera la identidad (clave P-256 y certificado autofirmado) y la guarda en el Llavero. Guarda la huella y el nombre del teléfono vinculado. | CryptoKit, swift-certificates, Keychain |
 | `SyncEngine` | Lógica pura: versiones, deduplicación por `id`, el último gana, caducidad de 2 minutos, ofertas y peticiones de imagen, y qué enviar al reconectar. | Ninguna (inyectable) |
 | `Preview` | Genera el texto de vista previa: recorte del texto, enmascarado de tarjetas y "contenido oculto". | Ninguna |
-| `MenuBarUI` | Estado, último elemento, "Vincular teléfono", "Abrir al iniciar sesión", "Ver registro" y "Desvincular". | Los anteriores |
+| `MenuBarUI` | Estado, último elemento, "Desvincular", "Abrir al iniciar sesión" y "Ver registro". Al vincularse un teléfono, pulso del icono y notificación "Kopi se vinculó con <nombre>" con la acción **Desvincular** (si macOS la permite). | Los anteriores, UserNotifications |
 
 ### 5.2 App de Android
 
 > **Enmienda 2026-10-25 (tras el experimento).** El experimento (`docs/spikes/2026-10-hios-clipboard.md`) mostró que el proceso de la app no puede leer el portapapeles en segundo plano y que HiOS lo congela. La sincronización se mueve a **`KopiDaemon`**, un `UserService` de Shizuku en modo daemon (`daemon(true)`, sufijo de proceso `daemon`) que corre como uid shell con el código del propio APK. La app queda como interfaz: configuración, vinculación y estado, y habla con el daemon por AIDL (`IKopiDaemon`). Ya no hay `SyncService` en primer plano ni identidad en el Android Keystore.
 
-- **Pila:** Kotlin, corrutinas, Jetpack Compose, Shizuku API (`dev.rikka.shizuku`, `UserService`), AIDL, `NsdManager`, OkHttp (WebSocket + TLS), PKCS#12 con BouncyCastle, CameraX, ML Kit Barcode y kotlinx.serialization.
+- **Pila:** Kotlin, corrutinas, Jetpack Compose, Shizuku API (`dev.rikka.shizuku`, `UserService`), AIDL, `NsdManager`, OkHttp (WebSocket + TLS), PKCS#12 con BouncyCastle y kotlinx.serialization.
 - **Versiones:** `minSdk 31`, `targetSdk 35`.
 
 | Módulo | Proceso | Responsabilidad | Depende de |
@@ -114,7 +114,7 @@ kopi/
 | `Preview` | daemon y app | La misma lógica que en la Mac. | Ninguna |
 | `ShellNotifier` | daemon | Notificación de estado publicada como `com.android.shell` vía `INotificationManager`. Si falla, el estado solo se ve en la app. | `INotificationManager` |
 | `ClipsProvider` | app | `ContentProvider` de solo lectura que sirve las imágenes Mac → Android que el daemon escribe en `/sdcard/Android/media/dev.alorebb.kopi/clips/`. | — |
-| `SetupUI` | app | Asistente: instalar e iniciar Shizuku → inicio automático de HiOS (si existe la pantalla oculta) y batería, opcionales → iniciar el daemon → vincular. Escanea el QR y pasa el `PairingUri` al daemon. Pantalla de estado que consulta al daemon mientras está abierta. | Shizuku API, CameraX, ML Kit, `IKopiDaemon` |
+| `SetupUI` | app | Asistente: instalar e iniciar Shizuku → inicio automático de HiOS (si existe la pantalla oculta) y batería, opcionales → iniciar el daemon, que se vincula solo con la Mac (§6.1; sin QR). Pantalla de estado que consulta al daemon mientras está abierta. | Shizuku API, `IKopiDaemon` |
 
 - **Reinicio:** Shizuku se detiene y el daemon también. Al abrir la app se muestra "Reactivar Shizuku". Hasta entonces no se lee ni se envía nada.
 - **Imágenes Android → Mac:** el daemon lee el URI con `ContentResolver` como shell. Es *best effort*: si shell no tiene acceso, solo se sincroniza texto desde Android y se registra el motivo.
@@ -126,16 +126,17 @@ La especificación completa irá en `protocol/PROTOCOL.md`. Resumen:
 
 ### 6.1 Emparejamiento
 
-1. **QR de la Mac:** al pulsar "Vincular teléfono", la Mac muestra un QR con:
-   `kopi://pair?v=1&host=<ip>&port=<p>&fp=<sha256 cert Mac>&code=<token 128 bits>`.
-   El código caduca a los 5 minutos y sirve una sola vez.
-2. **Conexión del teléfono:** escanea el QR, se conecta por TLS verificando `fp` y presenta su propio certificado. Envía `{"type":"pair","code":"…","name":"Tecno Camon 40 Pro"}`.
-3. **Confirmación:** la Mac valida el código, guarda la huella del certificado del teléfono y responde `{"type":"paired","name":"MacBook Air"}`.
-4. **Exclusividad:** a partir de aquí, cada lado acepta solo la huella del otro. Vincular un teléfono nuevo reemplaza al anterior.
+> **Enmienda 2026-10-25.** Se quita el QR y el código de un solo uso: el emparejamiento es automático (*trust on first use*) con opción de deshacer. Desaparecen el mensaje `pair` y el error `invalid_code`; `protocolVersion` sigue en 1.
+
+1. **Descubrimiento:** el teléfono encuentra la Mac por Bonjour (`_kopi._tcp`) o por el último host:puerto, y se conecta por TLS presentando su propio certificado.
+2. **Verificación en la Mac:** si **no hay teléfono vinculado**, acepta cualquier certificado de cliente. Si lo hay, solo acepta su huella.
+3. **Vinculación automática:** con un `hello` válido y sin teléfono vinculado, la Mac guarda la huella del certificado y `hello.name`, y responde `hello` y luego `{"type":"paired","name":"MacBook Air"}`. El teléfono fija entonces la huella de la Mac.
+4. **Exclusividad:** a partir de aquí, cada lado acepta solo la huella del otro. **Desvincular** en la Mac olvida el teléfono y corta la sesión; el siguiente teléfono que se conecte se vincula solo.
 
 ### 6.2 Sesión
 
-- Primer mensaje en ambos sentidos: `{"type":"hello","protocolVersion":1,"app":"1.0.0"}`. Si las versiones mayores difieren, se cierra con `{"type":"error","code":"version_mismatch"}`.
+- Primer mensaje en ambos sentidos: `{"type":"hello","protocolVersion":1,"app":"1.0.0","name":"Tecno Camon 40 Pro"}`. `name` es **obligatorio** (nombre visible del equipo que lo envía). Si las versiones mayores difieren, se cierra con `{"type":"error","code":"version_mismatch"}` y no se vincula nada.
+- Respuesta de la Mac: sin teléfono vinculado → `hello` + `paired`; vinculada con esta huella → `hello`; cualquier otro caso (p. ej., otro teléfono se vinculó mientras este conectaba) → `error not_paired` y cierre.
 - Transporte: WebSocket. Los mensajes de control van como frames de texto JSON; los datos de imagen, como frames binarios.
 
 ### 6.3 Mensajes de portapapeles
@@ -180,8 +181,8 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 | Estado | Android (notificación fija) | Mac (icono y menú) |
 |---|---|---|
 | Conectado | "Conectado a MacBook Air" · "Último: …, hace 5 s" | Icono normal · "Conectado a Tecno Camon 40 Pro" |
-| Buscando | "Buscando tu Mac…" | Icono atenuado · "Esperando al teléfono…" |
-| No disponible | "Mac no encontrada. Se conectará sola cuando estén en la misma red." | Icono atenuado · "Teléfono no conectado" |
+| Sin vincular | "Buscando tu Mac…" | Icono atenuado · "Esperando a tu teléfono… Abre Kopi en tu Android." |
+| No disponible (vinculado) | "Mac no encontrada. Se conectará sola cuando estén en la misma red." | Icono atenuado · "Teléfono no conectado" |
 
 ### Problemas que requieren acción
 
@@ -192,11 +193,11 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 | Huella rechazada | "Este teléfono ya no está vinculado a tu Mac." | **Vincular de nuevo** |
 | Versión incompatible | "Kopi está desactualizado en tu Mac (v1.0). Actualízalo para seguir sincronizando." | **Ver cómo actualizar** |
 | Imagen demasiado grande | "Imagen no enviada: pesa 34 MB (máximo 20 MB)." | — |
-| QR caducado | "El código caducó. Genera uno nuevo en la Mac." | **Escanear de nuevo** |
 
 ### Confirmaciones y casos silenciosos
 
 - **Mac:** al recibir algo, el icono hace un pulso breve, sin notificación.
+- **Mac, vinculación automática:** pulso del icono y notificación "Kopi se vinculó con Tecno Camon 40 Pro" · "Ya sincroniza lo que copias. ¿No es tu teléfono? Desvincúlalo." con la acción **Desvincular**. Con firma ad hoc macOS puede no permitir notificaciones; entonces solo queda el pulso y "Conectado a …" en el menú.
 - **Android:** se actualiza la línea "Último: …" de la notificación fija. La publica el daemon como `com.android.shell` (*best effort*); si no se puede, el estado solo se ve en la pantalla de la app.
 - **Sin aviso al usuario:** descartar contenido de más de 2 minutos al reconectar, una imagen interrumpida a mitad de la transferencia y las conversiones de formato. Todo esto solo se registra en el log interno.
 
@@ -204,8 +205,8 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 
 1. **Unitarias:** del `SyncEngine` (bucles, conflictos, caducidad, reconexión) y de `Preview` (Luhn: válidas, inválidas, con espacios y guiones; enmascarado; sensible). Swift Testing en la Mac; JUnit con `kotlinx-coroutines-test` en Android.
 2. **De contrato:** cada archivo de `protocol/fixtures/*.json` se decodifica y se vuelve a codificar de forma equivalente en **ambas** apps. Un fixture roto rompe la CI.
-3. **De integración en la Mac:** un cliente de prueba en Swift que actúa como teléfono y cubre el emparejamiento, el TLS mutuo, el rechazo de huellas desconocidas, el texto de punta a punta y la imagen con promesa. Usa un `NSPasteboard` con nombre propio, no el general.
-4. **Manuales:** una lista de verificación en `docs/manual-testing.md` (texto y tarjeta en ambas direcciones en menos de 1 s; capturas en ambas direcciones; reinicio del teléfono; 3 h en segundo plano; cambio a hotspot; desvincular y volver a vincular).
+3. **De integración en la Mac:** un cliente de prueba en Swift que actúa como teléfono y cubre la vinculación automática, el TLS mutuo, el rechazo de huellas desconocidas, el texto de punta a punta y la imagen con promesa. Usa un `NSPasteboard` con nombre propio, no el general.
+4. **Manuales:** una lista de verificación en `docs/manual-testing.md` (texto y tarjeta en ambas direcciones en menos de 1 s; capturas en ambas direcciones; reinicio del teléfono; 3 h en segundo plano; cambio a hotspot; desvincular y que el teléfono se vuelva a vincular solo).
 5. **CI (GitHub Actions):** Android en Ubuntu (compilación y pruebas) y Mac en macOS (compilación y pruebas), cada uno filtrado por ruta; ambos corren si cambia `protocol/`. Con un tag `v*`, se publican en Releases `Kopi.app.zip` sin firmar y el APK.
 6. **Fuera de alcance:** pruebas automáticas de interfaz.
 
@@ -228,7 +229,7 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 - JSON en lugar de Protobuf.
 - La Mac como servidor y el teléfono como cliente.
 - Clave P-256 y certificado autofirmado en ambos lados; huella SHA-256.
-- Códigos de vinculación de 128 bits que caducan a los 5 minutos.
+- Vinculación automática (*trust on first use*) con **Desvincular** como deshacer, en lugar de QR con código de un solo uso: en la red de casa el riesgo de que otro teléfono con Kopi se adelante es bajo y la Mac muestra siempre con quién está vinculada.
 - Fragmentos de imagen de 256 KB; límite de 20 MB; espera de 5 s al pegar una imagen en la Mac.
 - `minSdk 31` (Android 12).
 - Vista previa de ~40 caracteres.
