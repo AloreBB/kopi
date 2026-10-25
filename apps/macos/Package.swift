@@ -22,6 +22,6 @@ let package = Package(
         ),
         .executableTarget(name: "Kopi", dependencies: ["KopiCore", "KopiNet"]),
         .testTarget(name: "KopiCoreTests", dependencies: ["KopiCore"]),
-        .testTarget(name: "KopiNetTests", dependencies: ["KopiNet"]),
+        .testTarget(name: "KopiNetTests", dependencies: ["KopiCore", "KopiNet"]),
     ]
 )

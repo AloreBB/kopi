@@ -3,7 +3,7 @@ import Foundation
 // Protocol message models. The wire format is normative in protocol/PROTOCOL.md
 // and pinned by protocol/fixtures/*.json. The "type" key discriminates cases.
 // UUIDs are encoded lowercase, matching the fixtures.
-public enum KopiMessage: Codable, Equatable {
+public enum KopiMessage: Codable, Equatable, Sendable {
     case hello(Hello)
     case pair(Pair)
     case paired(Paired)
@@ -98,7 +98,7 @@ fileprivate struct FieldKey: CodingKey {
     }
 }
 
-public struct Hello: Codable, Equatable {
+public struct Hello: Codable, Equatable, Sendable {
     public var protocolVersion: Int
     public var app: String
 
@@ -113,7 +113,7 @@ public struct Hello: Codable, Equatable {
     }
 }
 
-public struct Pair: Codable, Equatable {
+public struct Pair: Codable, Equatable, Sendable {
     public var code: String
     public var name: String
 
@@ -128,7 +128,7 @@ public struct Pair: Codable, Equatable {
     }
 }
 
-public struct Paired: Codable, Equatable {
+public struct Paired: Codable, Equatable, Sendable {
     public var name: String
 
     public init(name: String) {
@@ -140,12 +140,12 @@ public struct Paired: Codable, Equatable {
     }
 }
 
-public enum ClipKind: String, Codable, Equatable {
+public enum ClipKind: String, Codable, Equatable, Sendable {
     case text
     case image
 }
 
-public struct Clip: Codable, Equatable {
+public struct Clip: Codable, Equatable, Sendable {
     public var id: UUID
     public var ts: Int64
     public var kind: ClipKind
@@ -169,7 +169,7 @@ public struct Clip: Codable, Equatable {
     }
 }
 
-public struct ClipOffer: Codable, Equatable {
+public struct ClipOffer: Codable, Equatable, Sendable {
     public var id: UUID
     public var ts: Int64
     public var kind: ClipKind
@@ -193,7 +193,7 @@ public struct ClipOffer: Codable, Equatable {
     }
 }
 
-public struct ClipRequest: Codable, Equatable {
+public struct ClipRequest: Codable, Equatable, Sendable {
     public var id: UUID
 
     public init(id: UUID) {
@@ -205,7 +205,7 @@ public struct ClipRequest: Codable, Equatable {
     }
 }
 
-public struct ClipData: Codable, Equatable {
+public struct ClipData: Codable, Equatable, Sendable {
     public var id: UUID
     public var size: Int
 
@@ -220,12 +220,12 @@ public struct ClipData: Codable, Equatable {
     }
 }
 
-public enum UnavailableReason: String, Codable, Equatable {
+public enum UnavailableReason: String, Codable, Equatable, Sendable {
     case expired
     case replaced
 }
 
-public struct ClipUnavailable: Codable, Equatable {
+public struct ClipUnavailable: Codable, Equatable, Sendable {
     public var id: UUID
     public var reason: UnavailableReason
 
@@ -240,13 +240,13 @@ public struct ClipUnavailable: Codable, Equatable {
     }
 }
 
-public enum ErrorCode: String, Codable, Equatable {
+public enum ErrorCode: String, Codable, Equatable, Sendable {
     case versionMismatch = "version_mismatch"
     case notPaired = "not_paired"
     case invalidCode = "invalid_code"
 }
 
-public struct KopiError: Codable, Equatable {
+public struct KopiError: Codable, Equatable, Sendable {
     public var code: ErrorCode
 
     public init(code: ErrorCode) {

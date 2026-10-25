@@ -11,21 +11,21 @@ import KopiNet
     let label = makeTestIdentityLabel()
 
     deinit {
-        try? Identity.delete(label: label)
+        deleteTestIdentity(label: label)
     }
 
     @Test func loadOrCreateIsStable() throws {
-        let first = try Identity.loadOrCreate(label: label)
-        let second = try Identity.loadOrCreate(label: label)
+        let first = try loadTestIdentity(label: label)
+        let second = try loadTestIdentity(label: label)
         #expect(first.fingerprint == second.fingerprint)
         #expect(first.fingerprint.count == 64)
         #expect(first.fingerprint == Identity.fingerprint(der: first.certificateDER))
     }
 
     @Test func deleteRemovesIdentity() throws {
-        let first = try Identity.loadOrCreate(label: label)
-        try Identity.delete(label: label)
-        let second = try Identity.loadOrCreate(label: label)
+        let first = try loadTestIdentity(label: label)
+        deleteTestIdentity(label: label)
+        let second = try loadTestIdentity(label: label)
         #expect(first.fingerprint != second.fingerprint)
     }
 }
