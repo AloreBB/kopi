@@ -1,7 +1,7 @@
-// Visible text, verbatim from spec §8 and the v1 plan (Task 11).
+// Visible text, verbatim from spec §8 and the v1 plan (Task 11, amended for automatic pairing).
 enum Copy {
     static func connected(to name: String) -> String { "Conectado a \(name)" }
-    static let waiting = "Esperando al teléfono…"
+    static let waiting = "Esperando a tu teléfono… Abre Kopi en tu Android."
     static let disconnected = "Teléfono no conectado"
     static let phoneOutdated = "Kopi está desactualizado en tu teléfono. Actualízalo para seguir sincronizando."
 
@@ -18,15 +18,13 @@ enum Copy {
     }
 
     // Menu.
-    static let pairPhone = "Vincular teléfono…"
     static let openAtLogin = "Abrir al iniciar sesión"
     static let showLog = "Ver registro"
     static let unpair = "Desvincular"
     static let quit = "Salir de Kopi"
 
-    // Pairing window.
-    static let pairingTitle = "Vincular teléfono"
-    static let pairingInstructions = "Escanea este código con Kopi en tu Android."
-    static let codeExpired = "El código caducó."
-    static let newCode = "Generar código nuevo"
+    // Notification after automatic pairing.
+    static func pairedTitle(_ name: String) -> String { "Kopi se vinculó con \(name)" }
+    static let pairedBody = "Ya sincroniza lo que copias. ¿No es tu teléfono? Desvincúlalo."
+    static let unpairAction = "Desvincular"
 }

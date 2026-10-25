@@ -23,11 +23,8 @@ struct KopiApp: App {
 @MainActor
 final class AppModel: ObservableObject {
     let coordinator: AppCoordinator
-    private let pairing: PairingStore
-    private let server: any PeerServing
     private let log = FileLog()
-    private let pairingWindow: PairingWindowController?
-    private var cancellables: Set<AnyCancellable> = []
+    private let notifier = PairingNotifier()
     private var clock: Timer?
 
     @Published private(set) var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -35,47 +32,33 @@ final class AppModel: ObservableObject {
     @Published private(set) var now = Date()
 
     init() {
-        pairing = PairingStore(defaults: .standard, now: AppModel.nowMs)
+        let server: any PeerServing
         do {
             let identity = try Identity.loadOrCreate()
             server = PeerServer(
-                identity: identity, pairing: pairing,
+                identity: identity, pairing: PairingStore(defaults: .standard),
                 serviceName: Host.current().localizedName ?? "Mac",
                 queue: DispatchQueue(label: "\(Limits.bundleID).server"))
-            pairingWindow = PairingWindowController(pairing: pairing, fingerprint: identity.fingerprint)
         } catch {
             log.event("identity_failed")
             server = OfflineServer()
-            pairingWindow = nil
         }
         coordinator = AppCoordinator(
             watcher: ClipboardWatcher(), server: server,
             engine: SyncEngine(strategy: .lazy, now: AppModel.nowMs), log: log)
+        // Pairing is automatic: tell the user which phone it was and offer the undo.
+        coordinator.onAutoPaired = { [notifier, log] name in
+            notifier.announcePaired(name: name) { log.event("notify_unavailable") }
+        }
+        notifier.onUnpair = { [weak self] in self?.unpair() }
         coordinator.start()
 
-        // A phone that just scanned the code connects: the pairing window is done.
-        coordinator.$status
-            .sink { [weak self] status in
-                if case .connected = status { self?.pairingWindow?.close() }
-            }
-            .store(in: &cancellables)
         clock = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.coordinator.last != nil else { return }
                 self.now = Date()
             }
         }
-        // First run: nothing to sync until a phone is paired, so start there.
-        if !isPaired {
-            DispatchQueue.main.async { [weak self] in self?.showPairing() }
-        }
-    }
-
-    var isPaired: Bool { pairing.pairedPhone != nil }
-    var canPair: Bool { pairingWindow != nil }
-
-    func showPairing() {
-        pairingWindow?.show()
     }
 
     func setLaunchAtLogin(_ enabled: Bool) {
@@ -97,11 +80,8 @@ final class AppModel: ObservableObject {
     }
 
     func unpair() {
-        pairing.unpair()
-        log.event("unpaired")
-        // Drop the current session; the phone's certificate is no longer accepted.
-        try? server.restart()
-        objectWillChange.send()
+        coordinator.unpair()
+        notifier.clearPaired()
     }
 
     private static func nowMs() -> Int64 {
@@ -122,14 +102,12 @@ struct MenuContent: View {
             Text(Copy.last(last.preview, secondsAgo: Int(model.now.timeIntervalSince(last.at))))
         }
         Divider()
-        Button(Copy.pairPhone) { model.showPairing() }
-            .disabled(!model.canPair)
+        Button(Copy.unpair) { model.unpair() }
+            .disabled(coordinator.pairedName == nil)
         Toggle(Copy.openAtLogin, isOn: Binding(
             get: { model.launchAtLogin },
             set: { model.setLaunchAtLogin($0) }))
         Button(Copy.showLog) { model.showLog() }
-        Button(Copy.unpair) { model.unpair() }
-            .disabled(!model.isPaired)
         Divider()
         Button(Copy.quit) { NSApp.terminate(nil) }
             .keyboardShortcut("q")
@@ -180,8 +158,10 @@ enum MenuBarIcon {
 private final class OfflineServer: PeerServing, @unchecked Sendable {
     weak var delegate: PeerServerDelegate?
     var isConnected: Bool { false }
+    var pairedPhoneName: String? { nil }
     func start() throws {}
     func restart() throws {}
     func send(_ message: KopiMessage) {}
     func sendImage(id: UUID, data: Data) {}
+    func unpair() {}
 }

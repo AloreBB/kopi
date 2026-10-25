@@ -17,10 +17,14 @@ extension ClipboardWatcher: ClipboardWatching {}
 public protocol PeerServing: AnyObject, Sendable {
     var delegate: PeerServerDelegate? { get set }
     var isConnected: Bool { get }
+    /// Name of the paired phone, or nil while unpaired.
+    var pairedPhoneName: String? { get }
     func start() throws
     func restart() throws
     func send(_ message: KopiMessage)
     func sendImage(id: UUID, data: Data)
+    /// Forgets the paired phone and drops its session; the next phone pairs itself.
+    func unpair()
 }
 
 extension PeerServer: PeerServing {}
@@ -34,7 +38,9 @@ extension PeerServer: PeerServing {}
 public final class AppCoordinator: ObservableObject {
     public enum Status: Equatable {
         case connected(String)
+        /// No phone paired yet: the next one that connects pairs itself.
         case waiting
+        /// A phone is paired but not connected.
         case disconnected
     }
 
@@ -50,6 +56,11 @@ public final class AppCoordinator: ObservableObject {
     @Published public private(set) var pulse = false
     /// The phone was turned away because it speaks an older protocol.
     @Published public private(set) var phoneOutdated = false
+    /// The paired phone's name, or nil while unpaired.
+    @Published public private(set) var pairedName: String?
+
+    /// Called when a phone pairs itself (trust on first use), so the app can tell the user.
+    public var onAutoPaired: ((String) -> Void)?
 
     private let watcher: any ClipboardWatching
     private let engine: SyncEngine
@@ -87,6 +98,8 @@ public final class AppCoordinator: ObservableObject {
     public func start() {
         watcher.onCopy = { [weak self] clip in self?.handleLocalCopy(clip) }
         server.delegate = self
+        pairedName = server.pairedPhoneName
+        status = pairedName == nil ? .waiting : .disconnected
         // NSWorkspace posts on the main thread; restart() is safe from any thread.
         wakeToken = wakeCenter.addObserver(
             forName: NSWorkspace.didWakeNotification, object: nil, queue: nil
@@ -218,9 +231,25 @@ public final class AppCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Connection state (main actor)
+    // MARK: - Pairing and connection state (main actor)
+
+    /// Forgets the paired phone; the next phone that connects pairs itself.
+    public func unpair() {
+        server.unpair()
+        pairedName = nil
+        status = .waiting
+        log.event("unpaired")
+    }
+
+    private func didAutoPair(name: String) {
+        pairedName = name
+        log.event("auto_paired")
+        pulseIcon()
+        onAutoPaired?(name)
+    }
 
     private func didConnect(name: String) {
+        pairedName = name
         status = .connected(name)
         phoneOutdated = false
         log.event("connected")
@@ -231,12 +260,16 @@ public final class AppCoordinator: ObservableObject {
     }
 
     private func didDisconnect() {
-        status = .disconnected
+        status = server.pairedPhoneName == nil ? .waiting : .disconnected
         log.event("disconnected")
     }
 
     private func markReceived() {
         refreshLast()
+        pulseIcon()
+    }
+
+    private func pulseIcon() {
         pulse = true
         pulseTask?.cancel()
         pulseTask = Task { [weak self] in
@@ -276,6 +309,10 @@ public final class AppCoordinator: ObservableObject {
 extension AppCoordinator: PeerServerDelegate {
     nonisolated public func peerConnected(name: String) {
         onMain { $0.didConnect(name: name) }
+    }
+
+    nonisolated public func peerPaired(name: String) {
+        onMain { $0.didAutoPair(name: name) }
     }
 
     nonisolated public func peerDisconnected() {

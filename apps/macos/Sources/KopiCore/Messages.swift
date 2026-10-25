@@ -5,7 +5,6 @@ import Foundation
 // UUIDs are encoded lowercase, matching the fixtures.
 public enum KopiMessage: Codable, Equatable, Sendable {
     case hello(Hello)
-    case pair(Pair)
     case paired(Paired)
     case clip(Clip)
     case clipOffer(ClipOffer)
@@ -16,7 +15,6 @@ public enum KopiMessage: Codable, Equatable, Sendable {
 
     private enum TypeTag: String, Codable {
         case hello
-        case pair
         case paired
         case clip
         case clipOffer = "clip_offer"
@@ -34,7 +32,6 @@ public enum KopiMessage: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         switch try container.decode(TypeTag.self, forKey: .type) {
         case .hello: self = .hello(try Hello(from: decoder))
-        case .pair: self = .pair(try Pair(from: decoder))
         case .paired: self = .paired(try Paired(from: decoder))
         case .clip: self = .clip(try Clip(from: decoder))
         case .clipOffer: self = .clipOffer(try ClipOffer(from: decoder))
@@ -51,9 +48,6 @@ public enum KopiMessage: Codable, Equatable, Sendable {
         switch self {
         case .hello(let value):
             try container.encode(TypeTag.hello, forKey: FieldKey("type"))
-            try value.encodeFields(to: &container)
-        case .pair(let value):
-            try container.encode(TypeTag.pair, forKey: FieldKey("type"))
             try value.encodeFields(to: &container)
         case .paired(let value):
             try container.encode(TypeTag.paired, forKey: FieldKey("type"))
@@ -101,29 +95,18 @@ fileprivate struct FieldKey: CodingKey {
 public struct Hello: Codable, Equatable, Sendable {
     public var protocolVersion: Int
     public var app: String
+    /// Display name of the sending device (required; used for trust-on-first-use pairing).
+    public var name: String
 
-    public init(protocolVersion: Int, app: String) {
+    public init(protocolVersion: Int, app: String, name: String) {
         self.protocolVersion = protocolVersion
         self.app = app
+        self.name = name
     }
 
     fileprivate func encodeFields(to container: inout KeyedEncodingContainer<FieldKey>) throws {
         try container.encode(protocolVersion, forKey: FieldKey("protocolVersion"))
         try container.encode(app, forKey: FieldKey("app"))
-    }
-}
-
-public struct Pair: Codable, Equatable, Sendable {
-    public var code: String
-    public var name: String
-
-    public init(code: String, name: String) {
-        self.code = code
-        self.name = name
-    }
-
-    fileprivate func encodeFields(to container: inout KeyedEncodingContainer<FieldKey>) throws {
-        try container.encode(code, forKey: FieldKey("code"))
         try container.encode(name, forKey: FieldKey("name"))
     }
 }
@@ -243,7 +226,6 @@ public struct ClipUnavailable: Codable, Equatable, Sendable {
 public enum ErrorCode: String, Codable, Equatable, Sendable {
     case versionMismatch = "version_mismatch"
     case notPaired = "not_paired"
-    case invalidCode = "invalid_code"
 }
 
 public struct KopiError: Codable, Equatable, Sendable {

@@ -45,3 +45,15 @@ func uuid(_ string: String) -> UUID {
 func sha(_ byte: UInt8) -> Data {
     Data(repeating: byte, count: 32)
 }
+
+// `name` is required in hello since trust-on-first-use pairing.
+func decodeHelloWithoutName() throws {
+    _ = try JSONDecoder().decode(
+        KopiMessage.self, from: Data(#"{"type":"hello","protocolVersion":1,"app":"1.0.0"}"#.utf8))
+}
+
+// The QR-era `pair` message no longer exists.
+func decodeRemovedPair() throws {
+    _ = try JSONDecoder().decode(
+        KopiMessage.self, from: Data(#"{"type":"pair","code":"q7Lr0Zb2Vx9KmT4nPa1cWg","name":"x"}"#.utf8))
+}

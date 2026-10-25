@@ -41,7 +41,6 @@ final class Session: @unchecked Sendable {
 
     enum Phase {
         case awaitingHello
-        case awaitingPair
         case active
     }
 

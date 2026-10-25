@@ -15,16 +15,16 @@ import KopiNet
         h.tearDown()
     }
 
-    @Test func pairingHandshakeSucceeds() async throws {
+    @Test func autoPairWhenUnpaired() async throws {
         #expect(try await h.start())
-        let code = h.openPairingWindow()
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        client.send(.pair(Pair(code: code, name: "Test Phone")))
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello(name: "Test Phone"))
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await client.next() == .text(.paired(Paired(name: h.serviceName))))
         #expect(h.pairedFingerprint == h.phone.fingerprint)
+        #expect(h.pairedName == "Test Phone")
+        #expect(await eventually { self.h.delegate.paired == ["Test Phone"] })
         #expect(await eventually { self.h.delegate.connected == ["Test Phone"] })
         #expect(h.server.isConnected)
     }
@@ -34,60 +34,102 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello(name: "Tecno"))
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await eventually { self.h.delegate.connected == ["Tecno"] })
+        #expect(await client.next(timeout: 0.3) == nil)
+        #expect(h.delegate.paired.isEmpty)
         #expect(h.server.isConnected)
     }
 
-    @Test func unknownClientRejected() async throws {
+    @Test func helloCarriesName() async throws {
+        h.markPhonePaired(name: "Nombre viejo")
+        #expect(try await h.start())
+        let client = h.makeClient()
+        #expect(await client.connect())
+        client.send(phoneHello(name: "Nombre nuevo"))
+        guard case .text(.hello(let reply))? = await client.next() else {
+            Issue.record("expected hello")
+            return
+        }
+        #expect(reply.name == h.serviceName)
+        #expect(await eventually { self.h.delegate.connected == ["Nombre nuevo"] })
+        #expect(h.pairedName == "Nombre nuevo")
+    }
+
+    @Test func pairedRejectsOtherClient() async throws {
+        h.markPaired(fingerprint: String(repeating: "ab", count: 32), name: "Otro")
         #expect(try await h.start())
         let client = h.makeClient()
         client.start()
-        client.send(helloV1())
+        client.send(phoneHello())
         #expect(await client.waitClosed())
         #expect(await client.next(timeout: 0.3) == nil)
         #expect(h.delegate.connected.isEmpty)
+        #expect(h.pairedName == "Otro")
         #expect(!h.server.isConnected)
     }
 
-    @Test func wrongCodeRejected() async throws {
+    @Test func unpairAllowsNewPhone() async throws {
         #expect(try await h.start())
-        _ = h.openPairingWindow()
-        let client = h.makeClient()
-        #expect(await client.connect())
-        client.send(helloV1())
-        client.send(.pair(Pair(code: "AAAAAAAAAAAAAAAAAAAAAA", name: "Test Phone")))
-        #expect(await client.next() == .text(helloV1()))
-        #expect(await client.next() == .text(.error(KopiError(code: .invalidCode))))
-        #expect(await client.waitClosed())
+        let first = h.makeClient()
+        #expect(await first.connect())
+        first.send(phoneHello(name: "Primero"))
+        #expect(await first.next() == .text(h.macHello()))
+        #expect(await first.next() == .text(.paired(Paired(name: h.serviceName))))
+
+        let other = try h.makeOtherPhone()
+        let rejected = h.makeClient(identity: other)
+        rejected.start()
+        rejected.send(phoneHello(name: "Segundo"))
+        #expect(await rejected.waitClosed())
+        #expect(h.pairedFingerprint == h.phone.fingerprint)
+
+        h.server.unpair()
         #expect(h.pairedFingerprint == nil)
-        #expect(h.delegate.connected.isEmpty)
+        #expect(await first.waitClosed())
+        #expect(await eventually { self.h.delegate.disconnects == 1 })
+
+        let second = h.makeClient(identity: other)
+        #expect(await second.connect())
+        second.send(phoneHello(name: "Segundo"))
+        #expect(await second.next() == .text(h.macHello()))
+        #expect(await second.next() == .text(.paired(Paired(name: h.serviceName))))
+        #expect(h.pairedFingerprint == other.fingerprint)
+        #expect(await eventually { self.h.delegate.connected == ["Primero", "Segundo"] })
     }
 
-    @Test func unpairedClientWithoutPairGetsNotPaired() async throws {
+    // Two phones pass TLS while the Mac is unpaired: the first hello wins, the other is
+    // turned away with not_paired and nothing is replaced.
+    @Test func secondUnpairedPhoneGetsNotPaired() async throws {
         #expect(try await h.start())
-        _ = h.openPairingWindow()
-        let client = h.makeClient()
-        #expect(await client.connect())
-        client.send(helloV1())
-        client.send(.clip(makeTestClip()))
-        #expect(await client.next() == .text(helloV1()))
-        #expect(await client.next() == .text(.error(KopiError(code: .notPaired))))
-        #expect(await client.waitClosed())
-        #expect(h.delegate.connected.isEmpty)
-        #expect(h.delegate.received.isEmpty)
+        let first = h.makeClient()
+        let other = try h.makeOtherPhone()
+        let second = h.makeClient(identity: other)
+        #expect(await first.connect())
+        #expect(await second.connect())
+        first.send(phoneHello(name: "Primero"))
+        #expect(await first.next() == .text(h.macHello()))
+        #expect(await first.next() == .text(.paired(Paired(name: h.serviceName))))
+
+        second.send(phoneHello(name: "Segundo"))
+        #expect(await second.next() == .text(.error(KopiError(code: .notPaired))))
+        #expect(await second.waitClosed())
+        #expect(h.pairedFingerprint == h.phone.fingerprint)
+        #expect(h.delegate.connected == ["Primero"])
+        #expect(h.server.isConnected)
     }
 
     @Test func versionMismatchRejected() async throws {
-        h.markPhonePaired()
         #expect(try await h.start())
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(.hello(Hello(protocolVersion: 2, app: "2.0.0")))
+        client.send(.hello(Hello(protocolVersion: 2, app: "2.0.0", name: "Test Phone")))
         #expect(await client.next() == .text(.error(KopiError(code: .versionMismatch))))
         #expect(await client.waitClosed())
         #expect(h.delegate.connected.isEmpty)
+        // A phone that cannot talk to this Mac must not claim it.
+        #expect(h.pairedFingerprint == nil)
     }
 
     @Test func textRoundTrip() async throws {
@@ -95,8 +137,8 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         let clip = makeTestClip()
         client.send(.clip(clip))
         #expect(await eventually { self.h.delegate.received == [.clip(clip)] })
@@ -112,8 +154,8 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await eventually { self.h.server.isConnected })
 
         let id = makeTestClip().id
@@ -131,8 +173,8 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         let id = makeTestClip().id
         client.sendBinary(id: id, length: 1_000)
         #expect(await eventually { self.h.delegate.chunks == [.init(id: id, length: 1_000)] })
@@ -143,13 +185,13 @@ import KopiNet
         #expect(try await h.start())
         let first = h.makeClient()
         #expect(await first.connect())
-        first.send(helloV1())
-        #expect(await first.next() == .text(helloV1()))
+        first.send(phoneHello())
+        #expect(await first.next() == .text(h.macHello()))
 
         let second = h.makeClient()
         #expect(await second.connect())
-        second.send(helloV1())
-        #expect(await second.next() == .text(helloV1()))
+        second.send(phoneHello())
+        #expect(await second.next() == .text(h.macHello()))
         #expect(await first.waitClosed())
         #expect(await eventually { self.h.delegate.connected.count == 2 })
         #expect(h.server.isConnected)
@@ -178,8 +220,8 @@ import KopiNet
         let port = h.server.listeningPort
         let before = h.makeClient()
         #expect(await before.connect())
-        before.send(helloV1())
-        #expect(await before.next() == .text(helloV1()))
+        before.send(phoneHello())
+        #expect(await before.next() == .text(h.macHello()))
 
         #expect(try await h.restart())
         #expect(h.server.listeningPort == port)
@@ -190,8 +232,8 @@ import KopiNet
         let elapsed = await ContinuousClock().measure {
             let after = h.makeClient()
             #expect(await after.connect())
-            after.send(helloV1())
-            #expect(await after.next() == .text(helloV1()))
+            after.send(phoneHello())
+            #expect(await after.next() == .text(h.macHello()))
         }
         #expect(elapsed < .seconds(2))
         #expect(await eventually { self.h.delegate.connected.count == 2 })
@@ -214,8 +256,8 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient(autoReplyPing: true)
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await eventually { self.h.server.isConnected })
         try await Task.sleep(nanoseconds: 1_500_000_000)
         #expect(h.server.isConnected)
@@ -228,8 +270,8 @@ import KopiNet
         #expect(try await h.start())
         let client = h.makeClient(autoReplyPing: false)
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await client.waitClosed(timeout: 3))
         #expect(await eventually { self.h.delegate.disconnects == 1 })
         #expect(!h.server.isConnected)
@@ -266,8 +308,8 @@ import KopiNet
 
         let client = h.makeClient()
         #expect(await client.connect())
-        client.send(helloV1())
-        #expect(await client.next() == .text(helloV1()))
+        client.send(phoneHello())
+        #expect(await client.next() == .text(h.macHello()))
         #expect(await eventually { h.delegate.connected.count == 1 })
     }
 }

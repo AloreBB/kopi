@@ -5,35 +5,51 @@ Initial app version: `1.0.0`. Mac server listens on fixed port `47474` and
 announces Bonjour service `_kopi._tcp`. Transport: WebSocket over mutual TLS 1.3
 (P-256 keys, self-signed certificates, SHA-256 fingerprint pinning).
 
-## 1. Pairing
+## 1. Pairing (trust on first use)
 
-1. **Mac QR:** tapping "Vincular teléfono" shows a QR with:
-   `kopi://pair?v=1&host=<ip>&port=<p>&fp=<sha256 Mac cert>&code=<128-bit token>`.
-   The code expires after 5 minutes (300_000 ms) and is single-use.
-2. **Phone connection:** the phone scans the QR, connects over TLS verifying
-   `fp`, presents its own certificate, and sends
-   `{"type":"pair","code":"…","name":"Tecno Camon 40 Pro"}`.
-3. **Confirmation:** the Mac validates the code, stores the phone certificate
-   fingerprint, and replies `{"type":"paired","name":"MacBook Air"}`.
-4. **Exclusivity:** from then on each side only accepts the other's
-   fingerprint. Pairing a new phone replaces the previous one.
+There is no QR code or pairing code. Pairing is automatic, with undo:
+
+1. **Discovery:** the phone finds the Mac through Bonjour `_kopi._tcp` (or its
+   last known host:port) and connects over TLS presenting its own certificate.
+2. **TLS verify on the Mac (server):** if **no phone is paired**, any client
+   certificate is accepted. If a phone is paired, only that phone's certificate
+   fingerprint is accepted.
+3. **TLS verify on the phone (client):** while it has no Mac stored, the phone
+   accepts the Mac's certificate and stores its fingerprint once it receives
+   `paired`. From then on it accepts only that fingerprint.
+4. **Automatic pairing:** when an unpaired Mac receives a valid `hello`, it
+   stores the client certificate fingerprint and `hello.name`, and replies
+   `hello` followed by `{"type":"paired","name":"MacBook Air"}`.
+5. **Exclusivity:** from then on each side only accepts the other's
+   fingerprint. **Desvincular** on the Mac forgets the phone and drops the
+   session; the next phone that connects pairs automatically.
 
 ## 2. Session
 
 - First message in both directions:
-  `{"type":"hello","protocolVersion":1,"app":"1.0.0"}`. If the major versions
-  differ, the connection closes with `{"type":"error","code":"version_mismatch"}`.
+  `{"type":"hello","protocolVersion":1,"app":"1.0.0","name":"Tecno Camon 40 Pro"}`.
+  `name` is **required**: the sender's display name (the phone's device name,
+  the Mac's computer name). If the major versions differ, the connection closes
+  with `{"type":"error","code":"version_mismatch"}` and nothing is paired.
 - Transport: WebSocket. Control messages go as JSON text frames; image data
   goes as binary frames.
 
 ### Session order
 
-The client sends `hello`, then `pair` only when pairing. The server replies
-`hello`, then `paired` or `error`.
+The client sends `hello`. The server checks `protocolVersion`, then:
+
+| Mac state | Server reply |
+|---|---|
+| No phone paired | Stores the client fingerprint and `hello.name`; replies `hello`, then `paired` |
+| Paired with this client's fingerprint | Replies `hello` (and updates the stored name if it changed) |
+| Anything else (e.g. another phone paired while this one was connecting) | `error not_paired`, then closes |
+
+A client whose certificate is not the paired one is rejected during the TLS
+handshake and never gets a message.
 
 ### Error codes
 
-`version_mismatch`, `not_paired`, `invalid_code`.
+`version_mismatch`, `not_paired`.
 
 ## 3. Clipboard messages
 
@@ -62,10 +78,6 @@ The client sends `hello`, then `pair` only when pairing. The server replies
 
 `[16 bytes of the UUID in big-endian][fragment ≤ 262144 bytes]`. The transfer
 ends when the sum of received bytes equals `size`.
-
-### QR format
-
-`kopi://pair?v=1&host=<ipv4>&port=47474&fp=<hex64>&code=<base64url without padding, 22 characters>`.
 
 ## 4. SyncEngine rules
 

@@ -5,6 +5,8 @@ import Security
 
 public protocol PeerServerDelegate: AnyObject {
     func peerConnected(name: String)
+    /// A phone was paired automatically (the Mac had none). `peerConnected` follows.
+    func peerPaired(name: String)
     func peerDisconnected()
     func received(_ message: KopiMessage)
     func receivedImageChunk(id: UUID, bytes: Data)
@@ -13,12 +15,14 @@ public protocol PeerServerDelegate: AnyObject {
 }
 
 public extension PeerServerDelegate {
+    func peerPaired(name: String) {}
     func peerVersionMismatch(protocolVersion: Int) {}
 }
 
 /// The Mac side of the protocol: a mutual-TLS 1.3 WebSocket listener advertised over
-/// Bonjour. Accepts only the paired phone's certificate, or any certificate while the
-/// pairing window is open (that session must then send a valid `pair`). Holds at most
+/// Bonjour. Pairing is trust-on-first-use: while no phone is paired, any client
+/// certificate passes TLS and the first one to complete `hello` becomes the paired
+/// phone; from then on only its fingerprint is accepted until `unpair()`. Holds at most
 /// one active session; a newer valid session replaces it.
 ///
 /// All state lives on `queue`, and every delegate callback is delivered there.
@@ -116,6 +120,20 @@ public final class PeerServer: @unchecked Sendable {
 
     public func stop() {
         onQueue { stopLocked() }
+    }
+
+    /// Name of the paired phone, or nil while unpaired.
+    public var pairedPhoneName: String? { pairing.pairedPhone?.name }
+
+    /// Forgets the paired phone and drops every session. The listener keeps running, so
+    /// the next phone that connects pairs automatically.
+    public func unpair() {
+        onQueue {
+            pairing.unpair()
+            peerLog.info("unpaired; dropping sessions")
+            let sessions = Array(pending.values) + (active.map { [$0] } ?? [])
+            sessions.forEach { $0.close() }
+        }
     }
 
     public func send(_ message: KopiMessage) {
@@ -237,10 +255,11 @@ public final class PeerServer: @unchecked Sendable {
         return listener
     }
 
-    /// TLS verify block (runs on `queue`): the paired phone, or anyone while pairing.
+    /// TLS verify block (runs on `queue`): anyone while unpaired, else only the paired phone.
     private func acceptsPeer(_ trust: sec_trust_t) -> Bool {
         guard let fingerprint = PeerTLS.leafFingerprint(trust) else { return false }
-        let accepted = fingerprint == pairing.pairedPhone?.fingerprint || pairing.isPairingWindowOpen
+        guard let paired = pairing.pairedPhone else { return true }
+        let accepted = fingerprint == paired.fingerprint
         if !accepted { peerLog.info("rejected unknown client certificate") }
         return accepted
     }
@@ -274,28 +293,11 @@ public final class PeerServer: @unchecked Sendable {
     private func handle(_ frame: Session.Frame, from session: Session) {
         switch (session.phase, frame) {
         case (.awaitingHello, .message(.hello(let hello))):
-            guard hello.protocolVersion == Limits.protocolVersion else {
-                peerLog.info("version mismatch: \(hello.protocolVersion, privacy: .public)")
-                session.sendAndClose(.error(KopiError(code: .versionMismatch)))
-                delegate?.peerVersionMismatch(protocolVersion: hello.protocolVersion)
-                return
-            }
-            session.send(.hello(Hello(protocolVersion: Limits.protocolVersion, app: Limits.appVersion)))
-            if let paired = pairing.pairedPhone, paired.fingerprint == session.peerFingerprint {
-                activate(session, name: paired.name)
-            } else {
-                session.phase = .awaitingPair
-            }
+            handleHello(hello, from: session)
 
         case (.awaitingHello, _):
             peerLog.info("first message was not hello; closing")
             session.close()
-
-        case (.awaitingPair, .message(.pair(let request))), (.active, .message(.pair(let request))):
-            handlePair(request, from: session)
-
-        case (.awaitingPair, _):
-            session.sendAndClose(.error(KopiError(code: .notPaired)))
 
         case (.active, .message(let message)):
             if case .hello = message { return }
@@ -306,20 +308,46 @@ public final class PeerServer: @unchecked Sendable {
         }
     }
 
-    private func handlePair(_ request: Pair, from session: Session) {
-        guard let fingerprint = session.peerFingerprint, pairing.consume(code: request.code) else {
-            peerLog.info("pairing rejected: invalid code")
-            session.sendAndClose(.error(KopiError(code: .invalidCode)))
+    private func handleHello(_ hello: Hello, from session: Session) {
+        guard hello.protocolVersion == Limits.protocolVersion else {
+            peerLog.info("version mismatch: \(hello.protocolVersion, privacy: .public)")
+            session.sendAndClose(.error(KopiError(code: .versionMismatch)))
+            delegate?.peerVersionMismatch(protocolVersion: hello.protocolVersion)
             return
         }
-        pairing.setPaired(fingerprint: fingerprint, name: request.name)
-        peerLog.info("paired new phone")
-        session.send(.paired(Paired(name: serviceName)))
-        if session.phase != .active {
-            activate(session, name: request.name)
-        } else {
-            session.peerName = request.name
+        guard let fingerprint = session.peerFingerprint else {
+            session.sendAndClose(.error(KopiError(code: .notPaired)))
+            return
         }
+        let name = Self.displayName(hello.name)
+        let reply = KopiMessage.hello(
+            Hello(protocolVersion: Limits.protocolVersion, app: Limits.appVersion, name: serviceName))
+
+        guard let paired = pairing.pairedPhone else {
+            // Trust on first use: the Mac had no phone, so this one becomes it.
+            pairing.setPaired(fingerprint: fingerprint, name: name)
+            peerLog.info("auto-paired new phone")
+            session.send(reply)
+            session.send(.paired(Paired(name: serviceName)))
+            delegate?.peerPaired(name: name)
+            activate(session, name: name)
+            return
+        }
+        guard paired.fingerprint == fingerprint else {
+            // Passed TLS while unpaired, but another phone paired first.
+            peerLog.info("hello from a phone that is not the paired one")
+            session.sendAndClose(.error(KopiError(code: .notPaired)))
+            return
+        }
+        if paired.name != name { pairing.setPaired(fingerprint: fingerprint, name: name) }
+        session.send(reply)
+        activate(session, name: name)
+    }
+
+    /// The phone's name as shown in the menu; never empty.
+    static func displayName(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "Android" : String(trimmed.prefix(64))
     }
 
     private func activate(_ session: Session, name: String) {

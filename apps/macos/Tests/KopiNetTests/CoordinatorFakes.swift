@@ -50,6 +50,8 @@ final class FakeServer: PeerServing, @unchecked Sendable {
     private var _sent: [KopiMessage] = []
     private var _sentImages: [(id: UUID, data: Data)] = []
     private var _restarts = 0
+    private var _unpairs = 0
+    private var _pairedName: String?
     var reply: PhoneReply = .none
 
     var delegate: PeerServerDelegate? {
@@ -63,9 +65,20 @@ final class FakeServer: PeerServing, @unchecked Sendable {
     var sent: [KopiMessage] { lock.withLock { _sent } }
     var sentImages: [(id: UUID, bytes: [UInt8])] { lock.withLock { _sentImages.map { ($0.id, [UInt8]($0.data)) } } }
     var restarts: Int { lock.withLock { _restarts } }
+    var unpairs: Int { lock.withLock { _unpairs } }
+    var pairedPhoneName: String? {
+        get { lock.withLock { _pairedName } }
+        set { lock.withLock { _pairedName = newValue } }
+    }
 
     func start() throws {}
     func restart() throws { lock.withLock { _restarts += 1 } }
+    func unpair() {
+        lock.withLock {
+            _unpairs += 1
+            _pairedName = nil
+        }
+    }
 
     func send(_ message: KopiMessage) {
         lock.withLock { _sent.append(message) }
@@ -103,9 +116,10 @@ struct CoordinatorRig {
     let wakeCenter: NotificationCenter
     let logURL: URL
 
-    init(pasteWait: TimeInterval = 5) {
+    init(pasteWait: TimeInterval = 5, pairedPhoneName: String? = nil) {
         watcher = FakeWatcher()
         server = FakeServer()
+        server.pairedPhoneName = pairedPhoneName
         wakeCenter = NotificationCenter()
         let dir = FileManager.default.temporaryDirectory.appending(path: "kopi-test-\(UUID().uuidString)")
         logURL = dir.appending(path: "kopi.log")

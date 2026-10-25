@@ -8,7 +8,6 @@ public enum Limits {
     public static let offerExpiryMs: Int64 = 120_000
     // Copies crossing in flight within this local-time window are resolved by sender ts.
     public static let conflictWindowMs: Int64 = 2_000
-    public static let pairingCodeExpiryMs: Int64 = 300_000
     public static let maxTextBytes = 4 * 1024 * 1024
     public static let allowedImageMimes = ["image/png", "image/jpeg"]
     public static let maxImageBytes = 20 * 1024 * 1024

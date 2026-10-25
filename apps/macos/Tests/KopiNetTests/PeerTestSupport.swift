@@ -33,8 +33,8 @@ func eventually(timeout: TimeInterval = 2, _ condition: () -> Bool) async -> Boo
     return condition()
 }
 
-func helloV1() -> KopiMessage {
-    .hello(Hello(protocolVersion: 1, app: "1.0.0"))
+func phoneHello(name: String = "Test Phone") -> KopiMessage {
+    .hello(Hello(protocolVersion: 1, app: "1.0.0", name: name))
 }
 
 func makeTestClip() -> Clip {
@@ -49,16 +49,19 @@ final class RecordingDelegate: PeerServerDelegate, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _connected: [String] = []
+    private var _paired: [String] = []
     private var _disconnects = 0
     private var _received: [KopiMessage] = []
     private var _chunks: [Chunk] = []
 
     var connected: [String] { lock.withLock { _connected } }
+    var paired: [String] { lock.withLock { _paired } }
     var disconnects: Int { lock.withLock { _disconnects } }
     var received: [KopiMessage] { lock.withLock { _received } }
     var chunks: [Chunk] { lock.withLock { _chunks } }
 
     func peerConnected(name: String) { lock.withLock { _connected.append(name) } }
+    func peerPaired(name: String) { lock.withLock { _paired.append(name) } }
     func peerDisconnected() { lock.withLock { _disconnects += 1 } }
     func received(_ message: KopiMessage) { lock.withLock { _received.append(message) } }
     func receivedImageChunk(id: UUID, bytes: Data) {
@@ -226,6 +229,7 @@ final class PeerHarness: @unchecked Sendable {
     let server: PeerServer
     let delegate = RecordingDelegate()
     private var clients: [TestPhoneClient] = []
+    private var extraLabels: [String] = []
 
     init(idleTimeout: TimeInterval = 75, advertise: Bool = false, port: UInt16 = 0) throws {
         do {
@@ -236,9 +240,7 @@ final class PeerHarness: @unchecked Sendable {
             deleteTestIdentity(label: phoneLabel)
             throw error
         }
-        pairing = PairingStore(
-            defaults: testDefaults.defaults,
-            now: { Int64(Date().timeIntervalSince1970 * 1000) })
+        pairing = PairingStore(defaults: testDefaults.defaults)
         server = PeerServer(
             identity: mac, pairing: pairing, port: port, serviceName: serviceName, queue: queue,
             advertise: advertise, pingInterval: min(30, idleTimeout / 3), idleTimeout: idleTimeout,
@@ -251,6 +253,7 @@ final class PeerHarness: @unchecked Sendable {
         server.stop()
         deleteTestIdentity(label: macLabel)
         deleteTestIdentity(label: phoneLabel)
+        extraLabels.forEach { deleteTestIdentity(label: $0) }
         removeTestDefaults(testDefaults.suite)
     }
 
@@ -267,22 +270,32 @@ final class PeerHarness: @unchecked Sendable {
         return await eventually(timeout: timeout) { server.listeningPort != nil }
     }
 
-    func openPairingWindow() -> String {
-        queue.sync {
-            let url = pairing.beginPairing(host: "127.0.0.1", fingerprint: mac.fingerprint)
-            return queryItems(url)["code"]!
-        }
+    /// A second phone with its own identity (deleted in tearDown).
+    func makeOtherPhone() throws -> LocalIdentity {
+        let label = makeTestIdentityLabel()
+        extraLabels.append(label)
+        return try loadTestIdentity(label: label)
     }
 
     func markPhonePaired(name: String = "Test Phone") {
-        queue.sync { pairing.setPaired(fingerprint: phone.fingerprint, name: name) }
+        markPaired(fingerprint: phone.fingerprint, name: name)
+    }
+
+    func markPaired(fingerprint: String, name: String) {
+        queue.sync { pairing.setPaired(fingerprint: fingerprint, name: name) }
     }
 
     var pairedFingerprint: String? { queue.sync { pairing.pairedPhone?.fingerprint } }
+    var pairedName: String? { queue.sync { pairing.pairedPhone?.name } }
 
-    func makeClient(autoReplyPing: Bool = true) -> TestPhoneClient {
+    /// The hello the Mac answers with: it carries the Mac's display name.
+    func macHello() -> KopiMessage {
+        .hello(Hello(protocolVersion: 1, app: "1.0.0", name: serviceName))
+    }
+
+    func makeClient(identity: LocalIdentity? = nil, autoReplyPing: Bool = true) -> TestPhoneClient {
         let client = TestPhoneClient(
-            identity: phone, serverFingerprint: mac.fingerprint, port: server.listeningPort ?? 0,
+            identity: identity ?? phone, serverFingerprint: mac.fingerprint, port: server.listeningPort ?? 0,
             autoReplyPing: autoReplyPing)
         clients.append(client)
         return client

@@ -140,11 +140,57 @@ private let jpegSignature: [UInt8] = [0xFF, 0xD8, 0xFF]
         let rig = CoordinatorRig()
         defer { rig.cleanUp() }
         #expect(rig.coordinator.status == .waiting)
+        rig.server.pairedPhoneName = "Tecno"
         rig.coordinator.peerConnected(name: "Tecno")
         rig.coordinator.peerDisconnected()
         await flushMain()
         #expect(rig.coordinator.status == .disconnected)
     }
+
+    @Test func startsWaitingWhenUnpairedAndDisconnectedWhenPaired() {
+        let unpaired = CoordinatorRig()
+        defer { unpaired.cleanUp() }
+        #expect(unpaired.coordinator.status == .waiting)
+        #expect(unpaired.coordinator.pairedName == nil)
+
+        let paired = CoordinatorRig(pairedPhoneName: "Tecno")
+        defer { paired.cleanUp() }
+        #expect(paired.coordinator.status == .disconnected)
+        #expect(paired.coordinator.pairedName == "Tecno")
+    }
+
+    @Test func autoPairPulsesAndAnnounces() async {
+        let rig = CoordinatorRig()
+        defer { rig.cleanUp() }
+        var announced: [String] = []
+        rig.coordinator.onAutoPaired = { announced.append($0) }
+        rig.server.pairedPhoneName = "Tecno"
+        rig.coordinator.peerPaired(name: "Tecno")
+        rig.coordinator.peerConnected(name: "Tecno")
+        await flushMain()
+        #expect(announced == ["Tecno"])
+        #expect(rig.coordinator.pulse)
+        #expect(rig.coordinator.pairedName == "Tecno")
+        #expect(rig.coordinator.status == .connected("Tecno"))
+        #expect(rig.logContents().contains("auto_paired"))
+    }
+
+    @Test func unpairForgetsPhoneAndWaitsForTheNextOne() async {
+        let rig = CoordinatorRig(pairedPhoneName: "Tecno")
+        defer { rig.cleanUp() }
+        rig.coordinator.peerConnected(name: "Tecno")
+        await flushMain()
+        rig.coordinator.unpair()
+        #expect(rig.server.unpairs == 1)
+        #expect(rig.coordinator.pairedName == nil)
+        #expect(rig.coordinator.status == .waiting)
+        // The dropped session reports its disconnect afterwards: still waiting.
+        rig.coordinator.peerDisconnected()
+        await flushMain()
+        #expect(rig.coordinator.status == .waiting)
+        #expect(rig.logContents().contains("unpaired"))
+    }
+
 
     @Test func outdatedPhoneIsReported() async {
         let rig = CoordinatorRig()
