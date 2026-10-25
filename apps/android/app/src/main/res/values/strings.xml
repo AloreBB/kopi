@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Visible copy (spec section 8), Spanish. Keys from plan Task 15; extra keys follow ux-heuristics. -->
+<resources>
+    <string name="app_name">Kopi</string>
+
+    <!-- Status -->
+    <string name="status_connected">Conectado a %1$s</string>
+    <string name="status_searching">Buscando tu Mac…</string>
+    <string name="status_not_found">Mac no encontrada. Se conectará sola cuando estén en la misma red.</string>
+    <string name="status_unpaired">Este teléfono aún no está vinculado a tu Mac.</string>
+    <string name="status_checking">Comprobando Kopi…</string>
+    <string name="last_item">Último: %1$s, hace %2$s</string>
+    <string name="your_mac">tu Mac</string>
+
+    <!-- Problems that need action -->
+    <string name="err_shizuku">Kopi no puede detectar lo que copias. Shizuku se desactivó al reiniciar.</string>
+    <string name="action_reactivate_shizuku">Reactivar Shizuku</string>
+    <string name="shizuku_how_to_start">Shizuku se apaga cada vez que reinicias el teléfono. Para encenderlo, abre Shizuku y, en «Iniciar desde depuración inalámbrica», toca «Iniciar». Si te lo pide, activa la Depuración inalámbrica. Luego vuelve a Kopi.</string>
+    <string name="err_shizuku_missing">Kopi necesita la app Shizuku para detectar lo que copias.</string>
+    <string name="action_install_shizuku">Instalar Shizuku</string>
+    <string name="err_shizuku_permission">Kopi necesita tu permiso en Shizuku para detectar lo que copias.</string>
+    <string name="action_grant_shizuku">Activar con Shizuku</string>
+    <string name="shizuku_permission_denied">Abre Shizuku, entra en las aplicaciones autorizadas y activa Kopi.</string>
+    <string name="action_open_shizuku">Abrir Shizuku</string>
+    <string name="err_daemon_stopped">Kopi no se está ejecutando.</string>
+    <string name="action_start_kopi">Iniciar Kopi</string>
+    <string name="action_remove_restriction">Quitar restricción</string>
+    <string name="restriction_removed">Restricción de batería quitada.</string>
+    <string name="err_not_paired">Este teléfono ya no está vinculado a tu Mac.</string>
+    <string name="action_pair_again">Vincular de nuevo</string>
+    <string name="err_version">Kopi está desactualizado en tu Mac. Actualízalo para seguir sincronizando.</string>
+    <string name="action_how_to_update">Ver cómo actualizar</string>
+    <string name="err_image_too_big">Imagen no enviada: pesa %1$d MB (máximo 20 MB).</string>
+    <string name="err_code_expired">El código caducó. Genera uno nuevo en la Mac.</string>
+    <string name="code_expired_hint">Si el código es nuevo, comprueba que el teléfono y la Mac estén en la misma red Wi-Fi.</string>
+    <string name="action_scan_again">Escanear de nuevo</string>
+    <string name="err_cannot_open">No se pudo abrir esa pantalla en este teléfono.</string>
+
+    <!-- Setup -->
+    <string name="setup_step">Paso %1$d de 3</string>
+    <string name="setup_shizuku_title">Permitir que Kopi detecte lo que copias</string>
+    <string name="setup_shizuku_body">Android no deja que las apps lean lo que copias en segundo plano. Kopi lo hace con la ayuda de Shizuku.</string>
+    <string name="setup_shizuku_ready">Listo: Shizuku está activo y Kopi tiene permiso.</string>
+    <string name="setup_autostart_title">Evitar que el teléfono cierre Kopi</string>
+    <string name="setup_autostart_body">Opcional. Ayuda a que Kopi siga sincronizando con la pantalla apagada.</string>
+    <string name="setup_autostart_hint">Activa Kopi en la lista.</string>
+    <string name="action_open_autostart">Abrir inicio automático</string>
+    <string name="action_skip">Omitir</string>
+    <string name="action_continue">Continuar</string>
+    <string name="setup_pair_title">Vincular con tu Mac</string>
+    <string name="setup_pair_body">En la Mac, abre Kopi en la barra de menú y elige «Vincular teléfono…». Luego escanea el código que aparece.</string>
+    <string name="action_scan_code">Escanear código</string>
+
+    <!-- Scanner and pairing -->
+    <string name="scanner_hint">Apunta la cámara al código de tu Mac.</string>
+    <string name="scanner_not_kopi">Este código no es de Kopi. Escanea el que muestra tu Mac.</string>
+    <string name="camera_needed">Kopi necesita la cámara para escanear el código de tu Mac.</string>
+    <string name="action_allow_camera">Permitir cámara</string>
+    <string name="action_open_settings">Abrir ajustes</string>
+    <string name="action_cancel">Cancelar</string>
+    <string name="pairing_progress">Vinculando con tu Mac…</string>
+
+    <!-- Status screen actions -->
+    <string name="action_unpair">Desvincular</string>
+    <string name="unpair_confirm_title">¿Desvincular de tu Mac?</string>
+    <string name="unpair_confirm_body">Kopi dejará de sincronizar. Para volver a usarlo tendrás que escanear el código otra vez.</string>
+    <string name="action_stop_kopi">Detener Kopi</string>
+
+    <!-- Status notification (posted by the daemon) -->
+    <string name="notification_channel">Estado de Kopi</string>
+</resources>

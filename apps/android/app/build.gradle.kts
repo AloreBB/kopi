@@ -2,6 +2,7 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.kotlin.compose)
 }
 
 android {
@@ -19,6 +20,7 @@ android {
     buildFeatures {
         aidl = true
         buildConfig = true
+        compose = true
     }
 
     compileOptions {
@@ -47,6 +49,16 @@ dependencies {
     implementation(libs.bouncycastle.bcpkix)
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    implementation(platform(libs.compose.bom))
+    implementation(libs.compose.ui)
+    implementation(libs.compose.material3)
+    implementation(libs.activity.compose)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
+    // Bundled model: works without Google Play services downloading it first.
+    implementation(libs.mlkit.barcode)
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.kotlinx.coroutines.test)

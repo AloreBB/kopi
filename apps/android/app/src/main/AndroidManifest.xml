@@ -1,12 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Package visibility: Shizuku (installed/launch) and HiOS Phone Master (hidden autostart screen). -->
+    <queries>
+        <package android:name="moe.shizuku.privileged.api" />
+        <package android:name="com.transsion.phonemaster" />
+    </queries>
+
     <application
-        android:label="Kopi"
+        android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <activity
-            android:name=".MainActivity"
+            android:name=".ui.MainActivity"
             android:exported="true"
+            android:screenOrientation="portrait"
             android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -20,10 +20,14 @@ import dev.alorebb.kopi.net.PairingUri
 import dev.alorebb.kopi.net.PeerClient
 import dev.alorebb.kopi.net.PeerState
 import dev.alorebb.kopi.net.PinnedTls
+import dev.alorebb.kopi.shizuku.ShizukuState
+import dev.alorebb.kopi.ui.StatusModel
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -48,6 +52,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
     private val identity: LocalIdentity
     private val clipboard: ShellClipboard?
     private val peer: PeerClient
+    private val notifier = ShellNotifier(log, ShellNotificationPoster())
 
     private class Download(val mime: String, val size: Int) {
         val bytes = ByteArrayOutputStream(size)
@@ -75,6 +80,12 @@ class KopiDaemon : IKopiDaemon.Stub() {
         )
         wire()
         watchNetwork(context)
+        scope.launch {
+            while (isActive) {
+                notifyStatus()
+                delay(NOTIFY_TICK_MS)   // keeps "hace N s" roughly current; posts only when the text changes
+            }
+        }
         if (state.read().macFingerprint != null) peer.start()
     }
 
@@ -88,6 +99,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
                 val connected = s is PeerState.Connected
                 if (connected && !wasConnected) engine.onReconnect()?.let(::send)
                 wasConnected = connected
+                notifyStatus()
             }
         }
     }
@@ -96,6 +108,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
         val message = engine.onLocalCopy(clip.content) ?: return
         if (message is ClipOffer) lastLocalImage = message.id to clip.imageBytes!!
         send(message)
+        notifyStatus()
     }
 
     private fun send(message: KopiMessage) {
@@ -127,6 +140,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
                 cb.writeText(action.text, sensitive)
                 engine.didApplyRemote(LocalContent.Text(action.text, sensitive))
                 log.event("applied", action.id, "text", action.text.encodeToByteArray().size)
+                notifyStatus()
             }
             is EngineAction.RequestImage -> {
                 val offer = message as? ClipOffer ?: return
@@ -157,6 +171,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
         }
         engine.didApplyRemote(LocalContent.Image(download.mime, bytes.size, MessageDigest.getInstance("SHA-256").digest(bytes)))
         log.event("applied", id, "image", bytes.size)
+        notifyStatus()
     }
 
     private fun serveImage(id: String) {
@@ -176,6 +191,11 @@ class KopiDaemon : IKopiDaemon.Stub() {
                 override fun onAvailable(network: Network) = peer.onNetworkChanged()
             })
         }.onFailure { log.event("network watch unavailable reason=${it.javaClass.simpleName}") }
+    }
+
+    /** Engine thread. The daemon only runs while Shizuku does, so Shizuku is Ready from its point of view. */
+    private fun notifyStatus() {
+        notifier.show(StatusModel.render(ShizukuState.Ready, true, snapshot(), System.currentTimeMillis()))
     }
 
     private fun snapshot(peerState: PeerState = peer.state.value): DaemonStatus {
@@ -202,11 +222,13 @@ class KopiDaemon : IKopiDaemon.Stub() {
         state.clear()
         peer.stop()
         log.event("unpaired")
+        scope.launch { notifyStatus() }
     }
 
     override fun stop() {
         log.event("daemon stopped")
         clipboard?.stop()
+        notifier.cancel()
         exitProcess(0)
     }
 
@@ -214,5 +236,6 @@ class KopiDaemon : IKopiDaemon.Stub() {
 
     private companion object {
         const val PAIR_TIMEOUT_MS = 20_000L
+        const val NOTIFY_TICK_MS = 10_000L
     }
 }
