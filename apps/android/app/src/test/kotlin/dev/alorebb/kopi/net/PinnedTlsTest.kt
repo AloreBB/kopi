@@ -1,0 +1,95 @@
+package dev.alorebb.kopi.net
+
+import org.junit.jupiter.api.Assertions.assertArrayEquals
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import java.security.MessageDigest
+import java.security.cert.CertificateException
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLServerSocket
+import javax.net.ssl.SSLSocket
+import kotlin.concurrent.thread
+
+class PinnedTlsTest {
+    private val mac = TestIdentity("Kopi Mac")
+    private val other = TestIdentity("Impostor")
+    private val phone = TestIdentity("Kopi Android")
+    private val macFp = Identity.fingerprint(mac.cert)
+    private val pw = "test".toCharArray()
+
+    @Test
+    fun fingerprintIsLowercaseHexSha256OfDer() {
+        val expected = MessageDigest.getInstance("SHA-256").digest(mac.cert.encoded)
+            .joinToString("") { "%02x".format(it) }
+        assertEquals(expected, macFp)
+        assertTrue(Regex("^[0-9a-f]{64}$").matches(macFp))
+    }
+
+    @Test
+    fun trustManagerAcceptsPinned() {
+        val tm = PinnedTls.trustManager(macFp)
+        tm.checkServerTrusted(arrayOf(mac.cert), "ECDHE_ECDSA")
+    }
+
+    @Test
+    fun trustManagerRejectsOther() {
+        val tm = PinnedTls.trustManager(macFp)
+        assertThrows<CertificateException> { tm.checkServerTrusted(arrayOf(other.cert), "ECDHE_ECDSA") }
+        assertThrows<CertificateException> { tm.checkServerTrusted(arrayOf(), "ECDHE_ECDSA") }
+    }
+
+    @Test
+    fun keyManagerServesIdentityAlias() {
+        val km = PinnedTls.keyManager(phone.keyStore(PinnedTls.ALIAS, pw), PinnedTls.ALIAS, pw)
+        assertEquals(PinnedTls.ALIAS, km.chooseClientAlias(arrayOf("EC"), null, null))
+        assertEquals(PinnedTls.ALIAS, km.chooseEngineClientAlias(arrayOf("EC"), null, null))
+        assertArrayEquals(arrayOf(phone.cert), km.getCertificateChain(PinnedTls.ALIAS))
+        assertEquals(phone.keyPair.private, km.getPrivateKey(PinnedTls.ALIAS))
+    }
+
+    @Test
+    fun handshakeSucceedsOnlyWithPinnedServer() {
+        val phoneStore = phone.keyStore(PinnedTls.ALIAS, pw)
+
+        fun serve(identity: TestIdentity): Pair<SSLServerSocket, Thread> {
+            val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
+            kmf.init(identity.keyStore("server", pw), pw)
+            val ctx = SSLContext.getInstance("TLSv1.3")
+            ctx.init(kmf.keyManagers, arrayOf(PinnedTls.trustManager(Identity.fingerprint(phone.cert))), null)
+            val server = ctx.serverSocketFactory.createServerSocket(0) as SSLServerSocket
+            server.needClientAuth = true
+            val t = thread {
+                runCatching {
+                    (server.accept() as SSLSocket).use { s ->
+                        s.startHandshake()
+                        s.outputStream.write(42)
+                        s.outputStream.flush()
+                    }
+                }
+            }
+            return server to t
+        }
+
+        val (good, goodThread) = serve(mac)
+        good.use {
+            val (ctx, _) = PinnedTls.sslContext(macFp, phoneStore, PinnedTls.ALIAS, pw)
+            (ctx.socketFactory.createSocket("127.0.0.1", good.localPort) as SSLSocket).use { s ->
+                s.startHandshake()
+                assertEquals(42, s.inputStream.read())
+            }
+            goodThread.join(5_000)
+        }
+
+        val (bad, badThread) = serve(other)
+        bad.use {
+            val (ctx, _) = PinnedTls.sslContext(macFp, phoneStore, PinnedTls.ALIAS, pw)
+            (ctx.socketFactory.createSocket("127.0.0.1", bad.localPort) as SSLSocket).use { s ->
+                assertThrows<Exception> { s.startHandshake() }
+            }
+            badThread.join(5_000)
+        }
+    }
+}
