@@ -8,13 +8,15 @@ enum KopiNetConstants {
 
 // One-time pairing code, QR URL and the paired phone's fingerprint.
 // The code lives only in memory; the paired phone is persisted in UserDefaults.
-public final class PairingStore {
+// Thread-safe: the menu (main thread) and the server queue both use it.
+public final class PairingStore: @unchecked Sendable {
     static let fingerprintKey = "pairedPhone.fingerprint"
     static let nameKey = "pairedPhone.name"
     static let codeByteCount = 16
 
     private let defaults: UserDefaults
     private let now: () -> Int64
+    private let lock = NSLock()
     private var code: String?
     private var issuedAt: Int64 = 0
 
@@ -26,8 +28,10 @@ public final class PairingStore {
     /// Issues a fresh code (invalidating any previous one) and returns the QR URL.
     public func beginPairing(host: String, fingerprint: String) -> URL {
         let newCode = Self.randomCode()
-        code = newCode
-        issuedAt = now()
+        lock.withLock {
+            code = newCode
+            issuedAt = now()
+        }
         var components = URLComponents()
         components.scheme = "kopi"
         components.host = "pair"
@@ -43,13 +47,24 @@ public final class PairingStore {
 
     /// True exactly once for the current code, while the pairing window is open.
     public func consume(code candidate: String) -> Bool {
-        guard isPairingWindowOpen, let code else { return false }
-        guard constantTimeEquals(Array(code.utf8), Array(candidate.utf8)) else { return false }
-        self.code = nil
-        return true
+        lock.withLock {
+            guard windowOpenLocked, let code else { return false }
+            guard constantTimeEquals(Array(code.utf8), Array(candidate.utf8)) else { return false }
+            self.code = nil
+            return true
+        }
+    }
+
+    /// Invalidates the current code (the pairing window was closed).
+    public func endPairing() {
+        lock.withLock { code = nil }
     }
 
     public var isPairingWindowOpen: Bool {
+        lock.withLock { windowOpenLocked }
+    }
+
+    private var windowOpenLocked: Bool {
         code != nil && now() - issuedAt < Limits.pairingCodeExpiryMs
     }
 

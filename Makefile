@@ -5,13 +5,13 @@ SWIFT_TEST_FLAGS := $(if $(findstring CommandLineTools,$(shell xcode-select -p))
 .PHONY: mac mac-test run-mac android android-test install-android test fixtures-check
 
 mac:
-	@echo "not yet" && exit 1
+	cd apps/macos && swift build -c release && scripts/bundle.sh
 
 mac-test:
 	cd apps/macos && swift test $(SWIFT_TEST_FLAGS)
 
 run-mac:
-	@echo "not yet" && exit 1
+	open apps/macos/build/Kopi.app
 
 android:
 	cd apps/android && ./gradlew :app:assembleDebug

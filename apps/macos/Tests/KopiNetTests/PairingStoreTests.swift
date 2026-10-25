@@ -32,6 +32,14 @@ private let fp = String(repeating: "ab", count: 32)
         #expect(store.isPairingWindowOpen)
     }
 
+    @Test func closingThePairingWindowInvalidatesTheCode() {
+        let store = makeStore()
+        let code = queryItems(store.beginPairing(host: "10.0.0.2", fingerprint: fp))["code"]!
+        store.endPairing()
+        #expect(!store.isPairingWindowOpen)
+        #expect(!store.consume(code: code))
+    }
+
     @Test func codeIsSingleUse() {
         let store = makeStore()
         let code = queryItems(store.beginPairing(host: "10.0.0.2", fingerprint: fp))["code"]!

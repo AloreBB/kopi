@@ -8,6 +8,12 @@ public protocol PeerServerDelegate: AnyObject {
     func peerDisconnected()
     func received(_ message: KopiMessage)
     func receivedImageChunk(id: UUID, bytes: Data)
+    /// A client spoke another protocol version and was turned away.
+    func peerVersionMismatch(protocolVersion: Int)
+}
+
+public extension PeerServerDelegate {
+    func peerVersionMismatch(protocolVersion: Int) {}
 }
 
 /// The Mac side of the protocol: a mutual-TLS 1.3 WebSocket listener advertised over
@@ -218,6 +224,7 @@ public final class PeerServer: @unchecked Sendable {
             guard hello.protocolVersion == Limits.protocolVersion else {
                 peerLog.info("version mismatch: \(hello.protocolVersion, privacy: .public)")
                 session.sendAndClose(.error(KopiError(code: .versionMismatch)))
+                delegate?.peerVersionMismatch(protocolVersion: hello.protocolVersion)
                 return
             }
             session.send(.hello(Hello(protocolVersion: Limits.protocolVersion, app: Limits.appVersion)))
