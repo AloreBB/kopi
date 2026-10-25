@@ -21,7 +21,10 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
     testOptions {
-        unitTests.all { it.useJUnitPlatform() }
+        unitTests.all {
+            it.useJUnitPlatform()
+            it.systemProperty("kopi.fixtures", rootDir.resolve("../../protocol/fixtures").canonicalPath)
+        }
     }
     kotlin {
         compilerOptions {
@@ -39,4 +42,7 @@ dependencies {
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.bouncycastle.bcpkix)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.okhttp.tls)
 }
