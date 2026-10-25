@@ -4,11 +4,11 @@ public enum PreviewInput: Equatable {
     case image
 }
 
-// Returns true when s holds only digits (after removing spaces and hyphens),
-// is 13-19 digits long, and passes the Luhn checksum.
+// Returns true when s holds only ASCII digits (after removing whitespace and
+// hyphens), is 13-19 digits long, and passes the Luhn checksum.
 public func isCardNumber(_ s: String) -> Bool {
-    let digits = s.filter { $0 != " " && $0 != "-" }
-    guard (13...19).contains(digits.count), digits.allSatisfy(\.isNumber) else { return false }
+    let digits = cardDigits(s)
+    guard (13...19).contains(digits.count), digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return false }
     var sum = 0
     for (index, char) in digits.reversed().enumerated() {
         var digit = char.wholeNumberValue!
@@ -29,8 +29,7 @@ public func preview(_ input: PreviewInput) -> String {
         return "imagen"
     case .text(let text, let sensitive):
         if isCardNumber(text) {
-            let digits = text.filter { $0 != " " && $0 != "-" }
-            return "tarjeta •••• \(digits.suffix(4))"
+            return "tarjeta •••• \(cardDigits(text).suffix(4))"
         }
         if sensitive {
             return "contenido oculto"
@@ -41,4 +40,8 @@ public func preview(_ input: PreviewInput) -> String {
         }
         return collapsed
     }
+}
+
+private func cardDigits(_ s: String) -> String {
+    s.filter { !$0.isWhitespace && $0 != "-" }
 }

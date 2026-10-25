@@ -25,3 +25,13 @@ import KopiCore
         == String(repeating: "a", count: 40) + "…")
     #expect(preview(.text("  línea 1\n\nlínea 2 ", sensitive: false)) == "línea 1 línea 2")
 }
+
+@Test func nonAsciiDigitsAreNotCards() {
+    #expect(!isCardNumber("½½½½½½½½½½½½½"))
+    #expect(!isCardNumber("٤٢٤٢٤٢٤٢٤٢٤٢٤٢٤٢"))
+}
+
+@Test func surroundingWhitespaceIsIgnored() {
+    #expect(isCardNumber("4242424242424242\n"))
+    #expect(preview(.text(" 4242 4242 4242 4242\n", sensitive: false)) == "tarjeta •••• 4242")
+}
