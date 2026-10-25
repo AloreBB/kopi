@@ -13,21 +13,16 @@ import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
 
 /**
- * Client TLS setup: presents the Keystore identity and trusts the server only if its
+ * Client TLS setup: presents the daemon's PKCS#12 identity and trusts the server only if its
  * leaf certificate's SHA-256 matches the fingerprint pinned at pairing time.
  */
 object PinnedTls {
-    const val ALIAS = Identity.ALIAS
+    const val ALIAS = "kopi_identity"
 
     /** The pinned fingerprint is the security boundary; hostnames are irrelevant. */
     val hostnameVerifier = HostnameVerifier { _, _ -> true }
 
-    fun sslContext(expectedFingerprint: String): Pair<SSLContext, X509TrustManager> {
-        Identity.ensure()
-        return sslContext(expectedFingerprint, Identity.keyStore(), ALIAS, null)
-    }
-
-    /** Injectable variant: [keyStore] holds the client key and chain under [alias]. */
+    /** [keyStore] holds the client key and chain under [alias]. */
     fun sslContext(
         expectedFingerprint: String,
         keyStore: KeyStore,
@@ -48,7 +43,7 @@ object PinnedTls {
     private class PinnedTrustManager(private val expected: String) : X509TrustManager {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val leaf = chain?.firstOrNull() ?: throw CertificateException("empty server chain")
-            if (Identity.fingerprint(leaf) != expected) throw CertificateException("server fingerprint mismatch")
+            if (Fingerprint.of(leaf) != expected) throw CertificateException("server fingerprint mismatch")
         }
 
         // Same rule when used server-side (tests); the phone itself only acts as a client.

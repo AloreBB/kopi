@@ -16,11 +16,17 @@ android {
         versionName = "1.0.0"
     }
 
+    buildFeatures {
+        aidl = true
+        buildConfig = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         unitTests.all {
             it.useJUnitPlatform()
             it.systemProperty("kopi.fixtures", rootDir.resolve("../../protocol/fixtures").canonicalPath)
@@ -38,11 +44,16 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.okhttp)
-    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     testImplementation(libs.junit.jupiter)
     testRuntimeOnly(libs.junit.platform.launcher)
-    testImplementation(libs.bouncycastle.bcpkix)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.okhttp.tls)
+    // Robolectric only for ImageCodecTest (JUnit 4, run through the vintage engine).
+    testImplementation(libs.robolectric)
+    testImplementation(libs.junit4)
+    testRuntimeOnly(libs.junit.vintage.engine)
 }

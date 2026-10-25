@@ -7,8 +7,10 @@ okhttp = "4.12.0"
 composeBom = "2025.10.01"
 junit = "5.13.4"
 junitPlatform = "1.13.4"
-datastore = "1.1.7"
 bouncycastle = "1.79"
+shizuku = "13.1.5"
+robolectric = "4.16"
+junit4 = "4.13.2"
 
 [libraries]
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
@@ -19,8 +21,12 @@ okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver",
 okhttp-tls = { group = "com.squareup.okhttp3", name = "okhttp-tls", version.ref = "okhttp" }
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit" }
+junit-vintage-engine = { group = "org.junit.vintage", name = "junit-vintage-engine", version.ref = "junit" }
+junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 junit-platform-launcher = { group = "org.junit.platform", name = "junit-platform-launcher", version.ref = "junitPlatform" }
-androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastore" }
+shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
+shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
 bouncycastle-bcpkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncycastle" }
 
 [plugins]

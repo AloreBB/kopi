@@ -13,7 +13,8 @@ import kotlin.coroutines.resume
  * found. Any Mac found is fine to try: TLS pinning rejects one that is not ours.
  */
 class AndroidNsdDiscovery(context: Context) : NsdDiscovery {
-    private val nsd = context.applicationContext.getSystemService(NsdManager::class.java)
+    // The daemon passes the system Context, which has no application.
+    private val nsd = (context.applicationContext ?: context).getSystemService(NsdManager::class.java)
 
     override suspend fun discover(): Endpoint? = suspendCancellableCoroutine { cont ->
         val done = AtomicBoolean(false)

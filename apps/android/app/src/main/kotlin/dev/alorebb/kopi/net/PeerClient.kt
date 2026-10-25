@@ -52,7 +52,7 @@ sealed interface PeerState {
     data object VersionMismatch : PeerState
 }
 
-/** The pairing state PeerClient reads and writes. Implemented by [dev.alorebb.kopi.data.Prefs]. */
+/** The pairing state PeerClient reads and writes. Implemented by [dev.alorebb.kopi.daemon.DaemonState]. */
 interface PeerStore {
     suspend fun pairedFingerprint(): String?
     suspend fun pairedMacName(): String?
@@ -76,7 +76,7 @@ class PairingException(val code: ErrorCode) : Exception("pairing rejected: $code
 
 /** Real connector: OkHttp over mutual TLS 1.3 with fingerprint pinning and 30 s pings. */
 class OkHttpConnector(
-    private val tls: (fingerprint: String) -> Pair<SSLContext, X509TrustManager> = { PinnedTls.sslContext(it) },
+    private val tls: (fingerprint: String) -> Pair<SSLContext, X509TrustManager>,
 ) : WsConnector {
     private val base = OkHttpClient.Builder()
         .pingInterval(Limits.PING_INTERVAL_SECONDS.toLong(), TimeUnit.SECONDS)

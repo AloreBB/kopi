@@ -56,7 +56,7 @@ import javax.net.ssl.SSLContext
 class PeerClientTest {
     private val macCert = HeldCertificate.Builder().commonName("Kopi Mac").ecdsa256().build()
     private val phoneCert = HeldCertificate.Builder().commonName("Kopi Android").ecdsa256().build()
-    private val macFp = Identity.fingerprint(macCert.certificate)
+    private val macFp = Fingerprint.of(macCert.certificate)
     private val pw = "test".toCharArray()
     private val imageId = "6f1c2a9e-3b4d-4e5f-8a7b-1c2d3e4f5a6b"
 
@@ -68,7 +68,7 @@ class PeerClientTest {
         val serverTls = SSLContext.getInstance("TLSv1.3").apply {
             init(
                 arrayOf(HandshakeCertificates.Builder().heldCertificate(macCert).build().keyManager),
-                arrayOf(PinnedTls.trustManager(Identity.fingerprint(phoneCert.certificate))),
+                arrayOf(PinnedTls.trustManager(Fingerprint.of(phoneCert.certificate))),
                 null,
             )
         }

@@ -17,7 +17,7 @@ class PinnedTlsTest {
     private val mac = TestIdentity("Kopi Mac")
     private val other = TestIdentity("Impostor")
     private val phone = TestIdentity("Kopi Android")
-    private val macFp = Identity.fingerprint(mac.cert)
+    private val macFp = Fingerprint.of(mac.cert)
     private val pw = "test".toCharArray()
 
     @Test
@@ -58,7 +58,7 @@ class PinnedTlsTest {
             val kmf = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
             kmf.init(identity.keyStore("server", pw), pw)
             val ctx = SSLContext.getInstance("TLSv1.3")
-            ctx.init(kmf.keyManagers, arrayOf(PinnedTls.trustManager(Identity.fingerprint(phone.cert))), null)
+            ctx.init(kmf.keyManagers, arrayOf(PinnedTls.trustManager(Fingerprint.of(phone.cert))), null)
             val server = ctx.serverSocketFactory.createServerSocket(0) as SSLServerSocket
             server.needClientAuth = true
             val t = thread {
