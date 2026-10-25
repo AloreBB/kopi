@@ -9,3 +9,4 @@ local.properties
 *.pem
 .DS_Store
 .claude/
+*.hprof
