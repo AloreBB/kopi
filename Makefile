@@ -14,13 +14,13 @@ run-mac:
 	@echo "not yet" && exit 1
 
 android:
-	@echo "not yet" && exit 1
+	cd apps/android && ./gradlew :app:assembleDebug
 
 android-test:
-	@echo "not yet" && exit 1
+	cd apps/android && ./gradlew test
 
 install-android:
-	@echo "not yet" && exit 1
+	adb install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
 
 test:
 	@echo "not yet" && exit 1
