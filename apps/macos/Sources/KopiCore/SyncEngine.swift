@@ -30,6 +30,8 @@ public final class SyncEngine {
     private let newID: () -> UUID
 
     private var lastAppliedRemote: LocalContent?
+    // Last content sent while the peer still holds it; cleared by any remote item.
+    private var lastSentLocal: LocalContent?
     private var current: (ts: Int64, id: UUID, setAt: Int64)?
     private var lastOutgoing: KopiMessage?
     private var lastOutgoingTs: Int64 = 0
@@ -47,21 +49,22 @@ public final class SyncEngine {
     }
 
     // Returns the message to send, or nil when the copy must not be sent
-    // (empty, oversized, or an echo of the last remote-applied content).
+    // (empty, oversized, an echo of the last remote-applied content, or a
+    // repeat of the last sent content that the peer already holds).
     public func onLocalCopy(_ content: LocalContent) -> KopiMessage? {
         switch content {
         case .text(let text, let sensitive):
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             guard text.utf8.count <= Limits.maxTextBytes else { return nil }
-            guard content != lastAppliedRemote else { return nil }
+            guard content != lastAppliedRemote, content != lastSentLocal else { return nil }
             let clip = Clip(id: newID(), ts: now(), kind: .text, text: text, sensitive: sensitive)
-            recordLocal(.clip(clip), id: clip.id, ts: clip.ts, preview: .text(text, sensitive: sensitive))
+            recordLocal(content, .clip(clip), id: clip.id, ts: clip.ts, preview: .text(text, sensitive: sensitive))
             return .clip(clip)
         case .image(let mime, let size, _):
             guard size <= Limits.maxImageBytes else { return nil }
-            guard content != lastAppliedRemote else { return nil }
+            guard content != lastAppliedRemote, content != lastSentLocal else { return nil }
             let offer = ClipOffer(id: newID(), ts: now(), kind: .image, mime: mime, size: size)
-            recordLocal(.clipOffer(offer), id: offer.id, ts: offer.ts, preview: .image)
+            recordLocal(content, .clipOffer(offer), id: offer.id, ts: offer.ts, preview: .image)
             return .clipOffer(offer)
         }
     }
@@ -76,12 +79,14 @@ public final class SyncEngine {
             current = (clip.ts, clip.id, now())
             lastPreview = (.text(clip.text, sensitive: clip.sensitive), clip.ts)
             lastOriginIsLocal = false
+            lastSentLocal = nil
             return [.writeText(clip.text, id: clip.id)]
         case .clipOffer(let offer):
             guard isNewer(ts: offer.ts, id: offer.id) else { return [] }
             current = (offer.ts, offer.id, now())
             lastPreview = (.image, offer.ts)
             lastOriginIsLocal = false
+            lastSentLocal = nil
             switch strategy {
             case .lazy:
                 return [.registerImagePromise(id: offer.id, mime: offer.mime, size: offer.size)]
@@ -96,6 +101,7 @@ public final class SyncEngine {
     // Call after the actions from onRemote were written to the local clipboard.
     public func didApplyRemote(_ content: LocalContent) {
         lastAppliedRemote = content
+        lastSentLocal = nil
     }
 
     // Answers a clip_request for an image offered by onLocalCopy.
@@ -123,10 +129,11 @@ public final class SyncEngine {
         lastPreview
     }
 
-    private func recordLocal(_ message: KopiMessage, id: UUID, ts: Int64, preview: PreviewInput) {
+    private func recordLocal(_ content: LocalContent, _ message: KopiMessage, id: UUID, ts: Int64, preview: PreviewInput) {
         current = (ts, id, now())
         // The peer now holds this item, so a later re-copy of the old remote content is new.
         lastAppliedRemote = nil
+        lastSentLocal = content
         lastOutgoing = message
         lastOutgoingTs = ts
         lastOriginIsLocal = true

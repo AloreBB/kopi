@@ -196,4 +196,32 @@ class SyncEngineTest {
         val skewed = Clip(id = id, ts = BASE_T - 5_000, kind = ClipKind.TEXT, text = "X", sensitive = false)
         assertEquals(listOf(EngineAction.WriteText("X", id)), engine.onRemote(skewed))
     }
+
+    // Some apps write the pasteboard twice for a single Cmd+C.
+    @Test
+    fun duplicateLocalCopyIsNotResent() {
+        val engine = engine()
+        assertNotNull(engine.onLocalCopy(LocalContent.Text("A", sensitive = false)))
+        assertNull(engine.onLocalCopy(LocalContent.Text("A", sensitive = false)))
+    }
+
+    @Test
+    fun sameLocalCopyAfterRemoteIsResent() {
+        val engine = engine()
+        assertNotNull(engine.onLocalCopy(LocalContent.Text("A", sensitive = false)))
+        t += 1_000
+        val id = "6f1c2a9e-3b4d-4e5f-8a7b-1c2d3e4f5a6b"
+        val remote = Clip(id = id, ts = t, kind = ClipKind.TEXT, text = "B", sensitive = false)
+        assertEquals(listOf(EngineAction.WriteText("B", id)), engine.onRemote(remote))
+        t += 1_000
+        assertNotNull(engine.onLocalCopy(LocalContent.Text("A", sensitive = false)))
+    }
+
+    @Test
+    fun duplicateImageIsNotResent() {
+        val engine = engine()
+        assertNotNull(engine.onLocalCopy(LocalContent.Image(mime = "image/png", size = 100, sha256 = sha(1))))
+        assertNull(engine.onLocalCopy(LocalContent.Image(mime = "image/png", size = 100, sha256 = sha(1))))
+        assertNotNull(engine.onLocalCopy(LocalContent.Image(mime = "image/png", size = 100, sha256 = sha(2))))
+    }
 }

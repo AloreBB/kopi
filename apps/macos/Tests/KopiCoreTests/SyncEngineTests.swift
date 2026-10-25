@@ -185,3 +185,31 @@ private let baseT: Int64 = 1_000_000
     let skewed = KopiMessage.clip(Clip(id: id, ts: baseT - 5_000, kind: .text, text: "X", sensitive: false))
     #expect(engine.onRemote(skewed) == [.writeText("X", id: id)])
 }
+
+// Some apps write the pasteboard twice for a single Cmd+C.
+@Test func duplicateLocalCopyIsNotResent() {
+    var t = baseT
+    let engine = SyncEngine(strategy: .lazy, now: { t })
+    #expect(engine.onLocalCopy(.text("A", sensitive: false)) != nil)
+    #expect(engine.onLocalCopy(.text("A", sensitive: false)) == nil)
+}
+
+@Test func sameLocalCopyAfterRemoteIsResent() {
+    var t = baseT
+    let engine = SyncEngine(strategy: .lazy, now: { t })
+    #expect(engine.onLocalCopy(.text("A", sensitive: false)) != nil)
+    t += 1_000
+    let id = uuid("6f1c2a9e-3b4d-4e5f-8a7b-1c2d3e4f5a6b")
+    let remote = KopiMessage.clip(Clip(id: id, ts: t, kind: .text, text: "B", sensitive: false))
+    #expect(engine.onRemote(remote) == [.writeText("B", id: id)])
+    t += 1_000
+    #expect(engine.onLocalCopy(.text("A", sensitive: false)) != nil)
+}
+
+@Test func duplicateImageIsNotResent() {
+    var t = baseT
+    let engine = SyncEngine(strategy: .lazy, now: { t })
+    #expect(engine.onLocalCopy(.image(mime: "image/png", size: 100, sha256: sha(1))) != nil)
+    #expect(engine.onLocalCopy(.image(mime: "image/png", size: 100, sha256: sha(1))) == nil)
+    #expect(engine.onLocalCopy(.image(mime: "image/png", size: 100, sha256: sha(2))) != nil)
+}

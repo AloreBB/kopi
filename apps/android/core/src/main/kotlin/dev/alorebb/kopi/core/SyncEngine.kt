@@ -39,6 +39,9 @@ class SyncEngine(
     private data class Current(val ts: Long, val id: String, val setAt: Long)
 
     private var lastAppliedRemote: LocalContent? = null
+
+    // Last content sent while the peer still holds it; cleared by any remote item.
+    private var lastSentLocal: LocalContent? = null
     private var current: Current? = null
     private var lastOutgoing: KopiMessage? = null
     private var lastOutgoingTs: Long = 0
@@ -48,26 +51,31 @@ class SyncEngine(
         private set
 
     // Returns the message to send, or null when the copy must not be sent
-    // (empty, oversized, or an echo of the last remote-applied content).
+    // (empty, oversized, an echo of the last remote-applied content, or a
+    // repeat of the last sent content that the peer already holds).
     fun onLocalCopy(content: LocalContent): KopiMessage? = when (content) {
         is LocalContent.Text -> {
             if (content.text.isBlank() ||
                 content.text.encodeToByteArray().size > Limits.MAX_TEXT_BYTES ||
-                content == lastAppliedRemote
+                content == lastAppliedRemote ||
+                content == lastSentLocal
             ) {
                 null
             } else {
                 val clip = Clip(newId(), now(), ClipKind.TEXT, content.text, content.sensitive)
-                recordLocal(clip, clip.id, clip.ts, PreviewInput.Text(content.text, content.sensitive))
+                recordLocal(content, clip, clip.id, clip.ts, PreviewInput.Text(content.text, content.sensitive))
                 clip
             }
         }
         is LocalContent.Image -> {
-            if (content.size > Limits.MAX_IMAGE_BYTES || content == lastAppliedRemote) {
+            if (content.size > Limits.MAX_IMAGE_BYTES ||
+                content == lastAppliedRemote ||
+                content == lastSentLocal
+            ) {
                 null
             } else {
                 val offer = ClipOffer(newId(), now(), ClipKind.IMAGE, content.mime, content.size)
-                recordLocal(offer, offer.id, offer.ts, PreviewInput.Image)
+                recordLocal(content, offer, offer.id, offer.ts, PreviewInput.Image)
                 offer
             }
         }
@@ -103,6 +111,7 @@ class SyncEngine(
     // Call after the actions from onRemote were written to the local clipboard.
     fun didApplyRemote(content: LocalContent) {
         lastAppliedRemote = content
+        lastSentLocal = null
     }
 
     // Answers a clip_request for an image offered by onLocalCopy.
@@ -125,10 +134,11 @@ class SyncEngine(
         return message
     }
 
-    private fun recordLocal(message: KopiMessage, id: String, ts: Long, preview: PreviewInput) {
+    private fun recordLocal(content: LocalContent, message: KopiMessage, id: String, ts: Long, preview: PreviewInput) {
         current = Current(ts, id, now())
         // The peer now holds this item, so a later re-copy of the old remote content is new.
         lastAppliedRemote = null
+        lastSentLocal = content
         lastOutgoing = message
         lastOutgoingTs = ts
         lastOriginIsLocal = true
@@ -139,6 +149,7 @@ class SyncEngine(
         current = Current(ts, id, now())
         lastItem = LastItem(preview, ts)
         lastOriginIsLocal = false
+        lastSentLocal = null
     }
 
     private fun isNewer(ts: Long, id: String): Boolean {
