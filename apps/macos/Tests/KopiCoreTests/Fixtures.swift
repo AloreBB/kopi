@@ -34,3 +34,14 @@ func decodeUnknownType() throws {
     _ = try JSONDecoder().decode(
         KopiMessage.self, from: Data(#"{"type":"nope"}"#.utf8))
 }
+
+// SyncEngineTests cannot import Foundation (it clashes with Testing on the
+// Command Line Tools toolchain), so UUID/Data values are built here and the
+// test file only relies on inferred types.
+func uuid(_ string: String) -> UUID {
+    UUID(uuidString: string)!
+}
+
+func sha(_ byte: UInt8) -> Data {
+    Data(repeating: byte, count: 32)
+}
