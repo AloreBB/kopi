@@ -22,8 +22,7 @@ android-test:
 install-android:
 	adb install -r apps/android/app/build/outputs/apk/debug/app-debug.apk
 
-test:
-	@echo "not yet" && exit 1
+test: fixtures-check mac-test android-test
 
 fixtures-check:
 	@for f in protocol/fixtures/*.json; do python3 -m json.tool "$$f" >/dev/null || exit 1; done
