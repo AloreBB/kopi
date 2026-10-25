@@ -1,8 +1,8 @@
 import Foundation
 
 /// Append-only event log at ~/Library/Logs/Kopi/kopi.log, rotated at 1 MB.
-/// The API takes no free-form content on purpose: only an event name, `id`, `kind`
-/// and `size` — clipboard contents must never reach the log.
+/// The API takes no free-form content on purpose: only an event name, `id`, `kind`,
+/// `size` and a fixed `reason` — clipboard contents must never reach the log.
 public final class FileLog: @unchecked Sendable {
     public static let defaultURL = FileManager.default.homeDirectoryForCurrentUser
         .appending(path: "Library/Logs/Kopi/kopi.log")
@@ -18,9 +18,12 @@ public final class FileLog: @unchecked Sendable {
         self.maxBytes = maxBytes
     }
 
-    /// `name` must be a fixed event name chosen by the caller, never user data.
-    public func event(_ name: String, id: UUID? = nil, kind: String? = nil, size: Int? = nil) {
+    /// `name` and `reason` must be fixed strings chosen by the caller, never user data.
+    public func event(
+        _ name: String, id: UUID? = nil, kind: String? = nil, size: Int? = nil, reason: String? = nil
+    ) {
         var line = "\(formatter.string(from: Date())) \(name)"
+        if let reason { line += " reason=\(reason)" }
         if let id { line += " id=\(id.uuidString.lowercased())" }
         if let kind { line += " kind=\(kind)" }
         if let size { line += " size=\(size)" }

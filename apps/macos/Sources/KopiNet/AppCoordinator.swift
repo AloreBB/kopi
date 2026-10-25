@@ -129,17 +129,24 @@ public final class AppCoordinator: ObservableObject {
             log.event("copy_skipped", kind: kind, size: Self.size(of: clip.content))
             return
         }
+        if case .clipOffer(let offer) = message, let data = clip.imageData {
+            localImage = (offer.id, data)
+        }
+        refreshLast()
+        // Nothing goes out while offline; the engine resends the latest item on reconnect.
+        guard server.isConnected else {
+            log.event("send_skipped", kind: kind, size: Self.size(of: clip.content), reason: "offline")
+            return
+        }
         switch message {
         case .clip(let sent):
             log.event("copy_sent", id: sent.id, kind: kind, size: sent.text.utf8.count)
         case .clipOffer(let offer):
-            if let data = clip.imageData { localImage = (offer.id, data) }
             log.event("offer_sent", id: offer.id, kind: kind, size: offer.size)
         default:
             break
         }
         server.send(message)
-        refreshLast()
     }
 
     // MARK: - Remote messages (main actor)

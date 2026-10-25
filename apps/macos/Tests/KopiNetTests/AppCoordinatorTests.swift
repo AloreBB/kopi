@@ -191,6 +191,27 @@ private let jpegSignature: [UInt8] = [0xFF, 0xD8, 0xFF]
         #expect(rig.logContents().contains("unpaired"))
     }
 
+    @Test func copyWhileOfflineLogsSendSkipped() {
+        let rig = CoordinatorRig()
+        defer { rig.cleanUp() }
+        rig.server.isConnected = false
+        rig.watcher.emitText("hola")
+        rig.watcher.emitImage(makePNG())
+        let log = rig.logContents()
+        #expect(!log.contains("copy_sent"))
+        #expect(!log.contains("offer_sent"))
+        #expect(log.contains("send_skipped") && log.contains("reason=offline") && log.contains("kind=text"))
+        #expect(log.contains("kind=image"))
+    }
+
+    @Test func copyWhileConnectedLogsSent() {
+        let rig = CoordinatorRig()
+        defer { rig.cleanUp() }
+        rig.watcher.emitText("hola")
+        let log = rig.logContents()
+        #expect(log.contains("copy_sent"))
+        #expect(!log.contains("send_skipped"))
+    }
 
     @Test func outdatedPhoneIsReported() async {
         let rig = CoordinatorRig()
