@@ -163,3 +163,25 @@ private let baseT: Int64 = 1_000_000
              kind: .text, text: "X", sensitive: false)))
     #expect(engine.onReconnect() == nil)
 }
+
+@Test func recopyAfterOtherLocalIsSent() {
+    var t = baseT
+    let engine = SyncEngine(strategy: .lazy, now: { t })
+    engine.didApplyRemote(.text("A", sensitive: false))
+    t += 1_000
+    #expect(engine.onLocalCopy(.text("B", sensitive: false)) != nil)
+    t += 1_000
+    #expect(engine.onLocalCopy(.text("A", sensitive: false)) != nil)
+}
+
+// The peer's clock may lag ours: ts-based conflict resolution only applies to
+// copies that cross in flight (within Limits.conflictWindowMs of local time).
+@Test func skewedRemoteAfterConflictWindowIsApplied() {
+    var t = baseT
+    let engine = SyncEngine(strategy: .lazy, now: { t })
+    _ = engine.onLocalCopy(.text("local", sensitive: false))
+    t += Limits.conflictWindowMs
+    let id = uuid("6f1c2a9e-3b4d-4e5f-8a7b-1c2d3e4f5a6b")
+    let skewed = KopiMessage.clip(Clip(id: id, ts: baseT - 5_000, kind: .text, text: "X", sensitive: false))
+    #expect(engine.onRemote(skewed) == [.writeText("X", id: id)])
+}

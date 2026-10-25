@@ -30,7 +30,7 @@ public final class SyncEngine {
     private let newID: () -> UUID
 
     private var lastAppliedRemote: LocalContent?
-    private var current: (ts: Int64, id: UUID)?
+    private var current: (ts: Int64, id: UUID, setAt: Int64)?
     private var lastOutgoing: KopiMessage?
     private var lastOutgoingTs: Int64 = 0
     private var lastOriginIsLocal = false
@@ -66,19 +66,20 @@ public final class SyncEngine {
         }
     }
 
-    // Remote clipboard content becomes local actions. A remote item older
-    // than the current one is ignored; on equal ts the greater id wins.
+    // Remote clipboard content becomes local actions. Within the conflict
+    // window, a remote item older than the current one is ignored and on equal
+    // ts the greater id wins; after it, arrival order wins (clocks may skew).
     public func onRemote(_ message: KopiMessage) -> [EngineAction] {
         switch message {
         case .clip(let clip):
             guard isNewer(ts: clip.ts, id: clip.id) else { return [] }
-            current = (clip.ts, clip.id)
+            current = (clip.ts, clip.id, now())
             lastPreview = (.text(clip.text, sensitive: clip.sensitive), clip.ts)
             lastOriginIsLocal = false
             return [.writeText(clip.text, id: clip.id)]
         case .clipOffer(let offer):
             guard isNewer(ts: offer.ts, id: offer.id) else { return [] }
-            current = (offer.ts, offer.id)
+            current = (offer.ts, offer.id, now())
             lastPreview = (.image, offer.ts)
             lastOriginIsLocal = false
             switch strategy {
@@ -123,7 +124,9 @@ public final class SyncEngine {
     }
 
     private func recordLocal(_ message: KopiMessage, id: UUID, ts: Int64, preview: PreviewInput) {
-        current = (ts, id)
+        current = (ts, id, now())
+        // The peer now holds this item, so a later re-copy of the old remote content is new.
+        lastAppliedRemote = nil
         lastOutgoing = message
         lastOutgoingTs = ts
         lastOriginIsLocal = true
@@ -132,6 +135,7 @@ public final class SyncEngine {
 
     private func isNewer(ts: Int64, id: UUID) -> Bool {
         guard let current else { return true }
+        if now() - current.setAt >= Limits.conflictWindowMs { return true }
         if ts != current.ts { return ts > current.ts }
         return id.uuidString.lowercased() > current.id.uuidString.lowercased()
     }
