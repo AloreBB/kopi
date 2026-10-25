@@ -1,0 +1,10 @@
+apps/macos/.build/
+apps/macos/build/
+apps/android/**/build/
+.gradle/
+local.properties
+*.keystore
+*.jks
+*.p12
+*.pem
+.DS_Store
