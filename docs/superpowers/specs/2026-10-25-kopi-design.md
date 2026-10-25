@@ -218,7 +218,7 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 - Fragmentos de imagen de 256 KB; límite de 20 MB; espera de 5 s al pegar una imagen en la Mac.
 - `minSdk 31` (Android 12).
 - Vista previa de ~40 caracteres.
-- Licencia del repo: **MIT** (pendiente de confirmar).
+- Licencia del repo: **Apache 2.0** (confirmada; `LICENSE` + `NOTICE`).
 
 ## 12. Queda para quien implemente
 
