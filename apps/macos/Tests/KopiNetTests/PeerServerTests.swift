@@ -186,6 +186,7 @@ import KopiNet
         #expect(await before.waitClosed())
         #expect(await eventually { self.h.delegate.disconnects == 1 })
 
+        // Measured from the moment the server reports ready again (rebind retries excluded).
         let elapsed = await ContinuousClock().measure {
             let after = h.makeClient()
             #expect(await after.connect())
@@ -241,5 +242,32 @@ import KopiNet
         #expect(await client.connect())
         #expect(await client.waitClosed(timeout: 3))
         #expect(h.delegate.connected.isEmpty)
+    }
+}
+
+// The listener retries with backoff when its port is busy (bind failure after restart or
+// wake), instead of staying dead.
+@Suite(.serialized) final class PeerServerRecoveryTests {
+    @Test func listenerRecoversWhenPortFreesUp() async throws {
+        let holder = try PortHolder()
+        let held = try #require(await holder.port())
+        let h = try PeerHarness(port: held)
+        defer {
+            holder.release()
+            h.tearDown()
+        }
+        h.markPhonePaired()
+
+        try h.server.start()
+        #expect(await !eventually(timeout: 0.5) { h.server.listeningPort != nil })
+
+        holder.release()
+        #expect(await eventually(timeout: 3) { h.server.listeningPort == held })
+
+        let client = h.makeClient()
+        #expect(await client.connect())
+        client.send(helloV1())
+        #expect(await client.next() == .text(helloV1()))
+        #expect(await eventually { h.delegate.connected.count == 1 })
     }
 }

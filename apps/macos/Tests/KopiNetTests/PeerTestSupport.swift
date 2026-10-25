@@ -191,6 +191,28 @@ final class TestPhoneClient: @unchecked Sendable {
     }
 }
 
+/// Holds a TCP port with a plain listener so another bind to it fails until `release()`.
+final class PortHolder: @unchecked Sendable {
+    private let listener: NWListener
+    private let queue = DispatchQueue(label: "dev.alorebb.kopi.test.holder")
+
+    init() throws {
+        listener = try NWListener(using: .tcp)
+        listener.newConnectionHandler = { $0.cancel() }
+        listener.start(queue: queue)
+    }
+
+    /// Waits for the ephemeral port the holder bound.
+    func port(timeout: TimeInterval = 2) async -> UInt16? {
+        _ = await eventually(timeout: timeout) { listener.port?.rawValue ?? 0 != 0 }
+        return listener.port?.rawValue
+    }
+
+    func release() {
+        listener.cancel()
+    }
+}
+
 /// One Mac server plus the identities, defaults and delegate it needs; cleans up after itself.
 final class PeerHarness: @unchecked Sendable {
     let macLabel = makeTestIdentityLabel()
@@ -205,7 +227,7 @@ final class PeerHarness: @unchecked Sendable {
     let delegate = RecordingDelegate()
     private var clients: [TestPhoneClient] = []
 
-    init(idleTimeout: TimeInterval = 75, advertise: Bool = false) throws {
+    init(idleTimeout: TimeInterval = 75, advertise: Bool = false, port: UInt16 = 0) throws {
         do {
             mac = try loadTestIdentity(label: macLabel)
             phone = try loadTestIdentity(label: phoneLabel)
@@ -218,8 +240,9 @@ final class PeerHarness: @unchecked Sendable {
             defaults: testDefaults.defaults,
             now: { Int64(Date().timeIntervalSince1970 * 1000) })
         server = PeerServer(
-            identity: mac, pairing: pairing, port: 0, serviceName: serviceName, queue: queue,
-            advertise: advertise, pingInterval: min(30, idleTimeout / 3), idleTimeout: idleTimeout)
+            identity: mac, pairing: pairing, port: port, serviceName: serviceName, queue: queue,
+            advertise: advertise, pingInterval: min(30, idleTimeout / 3), idleTimeout: idleTimeout,
+            retryInitialDelay: 0.05, retryMaxDelay: 0.4)
         server.delegate = delegate
     }
 
@@ -237,9 +260,11 @@ final class PeerHarness: @unchecked Sendable {
         return await eventually { server.listeningPort != nil }
     }
 
-    func restart() async throws -> Bool {
+    /// Restarts and waits for the listener to be ready again. The first rebind may fail
+    /// while the old socket is released, so this allows time for the retry backoff.
+    func restart(timeout: TimeInterval = 5) async throws -> Bool {
         try server.restart()
-        return await eventually { server.listeningPort != nil }
+        return await eventually(timeout: timeout) { server.listeningPort != nil }
     }
 
     func openPairingWindow() -> String {

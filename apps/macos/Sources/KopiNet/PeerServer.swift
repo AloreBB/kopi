@@ -35,11 +35,17 @@ public final class PeerServer: @unchecked Sendable {
     private let advertise: Bool
     private let pingInterval: TimeInterval
     private let idleTimeout: TimeInterval
+    private let retryInitialDelay: TimeInterval
+    private let retryMaxDelay: TimeInterval
     private let queueKey = DispatchSpecificKey<Void>()
 
     // Queue-confined state.
     private var configuredPort: UInt16
     private var listener: NWListener?
+    /// True between start()/restart() and stop(); gates listener recovery.
+    private var running = false
+    private var retryDelay: TimeInterval
+    private var retryWork: DispatchWorkItem?
     private var pending: [ObjectIdentifier: Session] = [:]
     private var active: Session?
 
@@ -53,6 +59,8 @@ public final class PeerServer: @unchecked Sendable {
     ///   - advertise: publish the Bonjour service `_kopi._tcp`.
     ///   - pingInterval / idleTimeout: WebSocket ping cadence and how long a session may
     ///     go without any frame or pong before it is closed.
+    ///   - retryInitialDelay / retryMaxDelay: backoff for rebuilding a listener that failed
+    ///     (e.g. port still held by the previous socket); doubles per attempt, reset on ready.
     public init(
         identity: LocalIdentity,
         pairing: PairingStore,
@@ -61,7 +69,9 @@ public final class PeerServer: @unchecked Sendable {
         queue: DispatchQueue,
         advertise: Bool = true,
         pingInterval: TimeInterval = TimeInterval(Limits.pingIntervalSeconds),
-        idleTimeout: TimeInterval = PeerServer.defaultIdleTimeout
+        idleTimeout: TimeInterval = PeerServer.defaultIdleTimeout,
+        retryInitialDelay: TimeInterval = 0.25,
+        retryMaxDelay: TimeInterval = 30
     ) {
         self.identity = identity
         self.pairing = pairing
@@ -71,6 +81,9 @@ public final class PeerServer: @unchecked Sendable {
         self.advertise = advertise
         self.pingInterval = pingInterval
         self.idleTimeout = idleTimeout
+        self.retryInitialDelay = retryInitialDelay
+        self.retryMaxDelay = retryMaxDelay
+        self.retryDelay = retryInitialDelay
         queue.setSpecific(key: queueKey, value: ())
     }
 
@@ -85,21 +98,19 @@ public final class PeerServer: @unchecked Sendable {
 
     public func start() throws {
         try onQueue {
-            guard listener == nil else { return }
-            let listener = try makeListener()
-            self.listener = listener
-            listener.start(queue: queue)
+            guard !running else { return }
+            try startListenerLocked()
         }
     }
 
     /// Tears down the listener and every session, then listens again on the same port.
     /// Used after wake from sleep, when the old listener and Bonjour record may be stale.
+    /// The old socket is released asynchronously, so the first rebind may fail; the
+    /// listener then recovers through the retry backoff.
     public func restart() throws {
         try onQueue {
             stopLocked()
-            let listener = try makeListener()
-            self.listener = listener
-            listener.start(queue: queue)
+            try startListenerLocked()
         }
     }
 
@@ -151,6 +162,43 @@ public final class PeerServer: @unchecked Sendable {
         return parameters
     }
 
+    private func startListenerLocked() throws {
+        running = true
+        let listener = try makeListener()
+        self.listener = listener
+        listener.start(queue: queue)
+    }
+
+    /// Drops a dead listener and rebuilds it after the current backoff delay.
+    private func scheduleRetryLocked() {
+        discardListenerLocked()
+        guard running else { return }
+        retryWork?.cancel()
+        let delay = retryDelay
+        retryDelay = min(retryDelay * 2, retryMaxDelay)
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.running, self.listener == nil else { return }
+            self.retryWork = nil
+            do {
+                try self.startListenerLocked()
+            } catch {
+                peerLog.error("listener create failed: \(String(describing: error), privacy: .public)")
+                self.scheduleRetryLocked()
+            }
+        }
+        retryWork = work
+        peerLog.info("listener retry in \(delay, privacy: .public)s")
+        queue.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    private func discardListenerLocked() {
+        listener?.stateUpdateHandler = nil
+        listener?.newConnectionHandler = nil
+        listener?.cancel()
+        listener = nil
+        mirrorLock.withLock { portMirror = nil }
+    }
+
     private func makeListener() throws -> NWListener {
         let parameters = makeParameters()
         let listener: NWListener
@@ -169,11 +217,16 @@ public final class PeerServer: @unchecked Sendable {
                 let port = listener.port?.rawValue
                 // Keep the ephemeral port so restart() rebinds the same one.
                 if self.configuredPort == 0, let port { self.configuredPort = port }
+                self.retryDelay = self.retryInitialDelay
                 self.mirrorLock.withLock { self.portMirror = port }
                 peerLog.info("listening on port \(port ?? 0, privacy: .public)")
             case .failed(let error):
                 peerLog.error("listener failed: \(String(describing: error), privacy: .public)")
-                self.mirrorLock.withLock { self.portMirror = nil }
+                self.scheduleRetryLocked()
+            case .waiting(let error):
+                // NWListener reports some bind failures (address in use) as waiting.
+                peerLog.error("listener waiting: \(String(describing: error), privacy: .public)")
+                self.scheduleRetryLocked()
             default:
                 break
             }
@@ -193,11 +246,11 @@ public final class PeerServer: @unchecked Sendable {
     }
 
     private func stopLocked() {
-        listener?.stateUpdateHandler = nil
-        listener?.newConnectionHandler = nil
-        listener?.cancel()
-        listener = nil
-        mirrorLock.withLock { portMirror = nil }
+        running = false
+        retryWork?.cancel()
+        retryWork = nil
+        retryDelay = retryInitialDelay
+        discardListenerLocked()
         let sessions = Array(pending.values) + (active.map { [$0] } ?? [])
         sessions.forEach { $0.close() }
     }
