@@ -13,7 +13,7 @@ Apple no permite usar su implementación (Continuity) desde Android: la descubre
 ### Uso y contexto
 
 - **Para quién:** uso personal del autor. El repositorio es público, así que el código y la documentación deben quedar presentables y no contener secretos.
-- **Dispositivos:** Tecno Camon 40 Pro (Android 15, HiOS) y MacBook Air M1 (macOS 15).
+- **Dispositivos:** Tecno Camon 40 Pro (Android 16, HiOS) y MacBook Air M1 (macOS 15).
 - **Redes:** el Wi-Fi de casa, o la Mac conectada al hotspot del teléfono. En ambos casos comparten red local.
 - **Caso más frecuente:** copiar un número de tarjeta en el teléfono y pegarlo en la Mac.
 
@@ -23,7 +23,7 @@ Apple no permite usar su implementación (Continuity) desde Android: la descubre
 
 - Sincronizar **texto e imágenes** en **ambas direcciones**, de forma **automática**.
 - Que el texto esté disponible para pegar en el otro equipo en **menos de 1 segundo** desde que se copia.
-- Seguir funcionando tras reiniciar el teléfono y tras horas en segundo plano.
+- Seguir funcionando tras horas en segundo plano, y tras reiniciar el teléfono una vez reactivado Shizuku.
 - Emparejar una sola vez, escaneando un QR.
 - Mostrar siempre el estado de la conexión.
 
@@ -46,8 +46,9 @@ Apple no permite usar su implementación (Continuity) desde Android: la descubre
 
 ## 3. Restricciones
 
-- **Android ≥ 10** solo permite leer el portapapeles a la app en primer plano. Kopi obtiene `READ_CLIPBOARD_IN_BACKGROUND` mediante **Shizuku**, sin root.
-- **HiOS** cierra servicios en segundo plano con agresividad. Hacen falta un servicio en primer plano y una exclusión del ahorro de batería.
+- **Android ≥ 10** solo permite leer el portapapeles a la app en primer plano. En el Tecno (Android 16, HiOS) el appop `READ_CLIPBOARD_IN_BACKGROUND` no existe, así que no se le puede conceder a la app. El uid **shell** sí tiene ese permiso: Kopi lee el portapapeles desde un proceso shell que lanza **Shizuku**, sin root (ver §5.2).
+- **HiOS** congela el proceso de la app a los ~8–10 s en segundo plano, aunque tenga un servicio en primer plano, exclusión de batería e inicio automático. Los procesos shell no se congelan. Por eso la sincronización corre en un daemon shell, no en la app.
+- **Sin root, Shizuku se detiene al reiniciar** el teléfono, y el daemon con él. Hay que reactivarlo a mano tras cada reinicio.
 - **macOS** no notifica los cambios del portapapeles, así que hay que consultar `NSPasteboard.changeCount`.
 - **No está instalado Xcode**, solo las Command Line Tools con Swift 6.2. La app de Mac debe compilar con SwiftPM.
 - **Android no tiene "promesas" de portapapeles**: el contenido se escribe completo al recibirlo.
@@ -97,19 +98,27 @@ kopi/
 
 ### 5.2 App de Android
 
-- **Pila:** Kotlin, corrutinas, Jetpack Compose, Shizuku API (`dev.rikka.shizuku`), `NsdManager`, OkHttp (WebSocket + TLS), Android Keystore, CameraX, ML Kit Barcode y kotlinx.serialization.
+> **Enmienda 2026-10-25 (tras el experimento).** El experimento (`docs/spikes/2026-10-hios-clipboard.md`) mostró que el proceso de la app no puede leer el portapapeles en segundo plano y que HiOS lo congela. La sincronización se mueve a **`KopiDaemon`**, un `UserService` de Shizuku en modo daemon (`daemon(true)`, sufijo de proceso `daemon`) que corre como uid shell con el código del propio APK. La app queda como interfaz: configuración, vinculación y estado, y habla con el daemon por AIDL (`IKopiDaemon`). Ya no hay `SyncService` en primer plano ni identidad en el Android Keystore.
+
+- **Pila:** Kotlin, corrutinas, Jetpack Compose, Shizuku API (`dev.rikka.shizuku`, `UserService`), AIDL, `NsdManager`, OkHttp (WebSocket + TLS), PKCS#12 con BouncyCastle, CameraX, ML Kit Barcode y kotlinx.serialization.
 - **Versiones:** `minSdk 31`, `targetSdk 35`.
 
-| Módulo | Responsabilidad | Depende de |
-|---|---|---|
-| `ClipboardWatcher` | `OnPrimaryClipChangedListener` con el permiso de Shizuku. Lee texto e imagen (URI → bytes) y escribe lo recibido, con las imágenes vía `FileProvider`. Lee `ClipDescription.EXTRA_IS_SENSITIVE`. | `ClipboardManager`, `ShizukuGate` |
-| `ShizukuGate` | Comprueba Shizuku, pide el permiso y concede `READ_CLIPBOARD_IN_BACKGROUND` mediante `appops`. Expone el estado. | Shizuku API |
-| `PeerClient` | Descubre `_kopi._tcp` y conecta por OkHttp con TLS mutuo y la huella de la Mac fijada. Reintenta con espera creciente (1→30 s) y reintenta de inmediato al cambiar de red. Envía un *ping* cada 30 s. | `NsdManager`, OkHttp, `Pairing` |
-| `Pairing` | Escanea el QR. Genera la clave y el certificado en el Android Keystore y guarda la huella de la Mac (DataStore). | CameraX, ML Kit, Keystore |
-| `SyncEngine` | La misma lógica que en la Mac (portada, verificada con los mismos fixtures y casos). | Ninguna |
-| `Preview` | La misma lógica que en la Mac. | Ninguna |
-| `SyncService` | Servicio en primer plano (`specialUse`, `START_STICKY`) que aloja los anteriores y mantiene la notificación de estado. | Todos |
-| `SetupUI` | Asistente de primer uso: Shizuku → batería e inicio automático de HiOS → vinculación. Luego, pantalla de estado. | Todos |
+| Módulo | Proceso | Responsabilidad | Depende de |
+|---|---|---|---|
+| `KopiDaemon` | daemon (shell) | `UserService` de Shizuku que implementa `IKopiDaemon`. Aloja `SyncEngine` (`EAGER`), `PeerClient` y `ShellClipboard`, y publica la notificación de estado. | Todos los del daemon |
+| `ShellClipboard` | daemon | `IClipboard` por reflexión como `"com.android.shell"`: `getPrimaryClip`, `setPrimaryClip` y `addPrimaryClipChangedListener`. Si el listener no se dispara, sondea cada 1 s. Lee texto, imagen (URI → bytes, si shell tiene acceso) y `EXTRA_IS_SENSITIVE`. | `ServiceManager`, `IClipboard` |
+| `DaemonIdentity` | daemon | Clave EC P-256 por software y certificado autofirmado en `/data/local/tmp/kopi/identity.p12` (carpeta 700, archivo 600, dueño shell). Se inyecta en `PinnedTls`. | BouncyCastle, `KeyStore` PKCS12 |
+| `DaemonState` | daemon | `PeerStore` en `/data/local/tmp/kopi/state.json` (600): huella y nombre de la Mac, último host y puerto. | kotlinx.serialization |
+| `PeerClient` | daemon | Descubre `_kopi._tcp` con `NsdManager` (vía un `Context` de sistema obtenido por reflexión, `ActivityThread`) y, si no, usa el último host:puerto. Conecta por OkHttp con TLS mutuo y la huella de la Mac fijada. Reintenta con espera creciente (1→30 s) y de inmediato al cambiar de red. *Ping* cada 30 s. | `NsdManager`, OkHttp, `PinnedTls` |
+| `SyncEngine` | daemon | La misma lógica que en la Mac (portada, verificada con los mismos fixtures y casos). | Ninguna |
+| `Preview` | daemon y app | La misma lógica que en la Mac. | Ninguna |
+| `ShellNotifier` | daemon | Notificación de estado publicada como `com.android.shell` vía `INotificationManager`. Si falla, el estado solo se ve en la app. | `INotificationManager` |
+| `ClipsProvider` | app | `ContentProvider` de solo lectura que sirve las imágenes Mac → Android que el daemon escribe en `/sdcard/Android/media/dev.alorebb.kopi/clips/`. | — |
+| `SetupUI` | app | Asistente: instalar e iniciar Shizuku → inicio automático de HiOS (si existe la pantalla oculta) y batería, opcionales → iniciar el daemon → vincular. Escanea el QR y pasa el `PairingUri` al daemon. Pantalla de estado que consulta al daemon mientras está abierta. | Shizuku API, CameraX, ML Kit, `IKopiDaemon` |
+
+- **Reinicio:** Shizuku se detiene y el daemon también. Al abrir la app se muestra "Reactivar Shizuku". Hasta entonces no se lee ni se envía nada.
+- **Imágenes Android → Mac:** el daemon lee el URI con `ContentResolver` como shell. Es *best effort*: si shell no tiene acceso, solo se sincroniza texto desde Android y se registra el motivo.
+- **Imágenes Mac → Android:** el daemon escribe el PNG en `/sdcard/Android/media/dev.alorebb.kopi/clips/` (shell puede escribir ahí y la app leer) y pone en el portapapeles un URI `content://dev.alorebb.kopi.clips/<id>` servido por `ClipsProvider`.
 
 ## 6. Protocolo
 
@@ -160,7 +169,7 @@ La especificación completa irá en `protocol/PROTOCOL.md`. Resumen:
   - **Marcado como sensible** por la app de origen (`EXTRA_IS_SENSITIVE`, `org.nspasteboard.ConcealedType`): `contenido oculto`.
   - **Imagen:** `imagen`.
 - **Los logs** nunca contienen contenido del portapapeles, solo el tipo, el tamaño y el `id`.
-- **Las claves privadas** viven en el Llavero (Mac) y en el Android Keystore. Nunca se guardan en archivos ni en el repo.
+- **Las claves privadas** viven en el Llavero (Mac) y, en Android, en `/data/local/tmp/kopi/identity.p12` (carpeta 700, archivo 600, dueño shell: solo adb y shell pueden leerlo), porque el daemon shell no puede usar el Android Keystore de la app. Nunca se guardan en el repo.
 
 ## 8. Mensajes al usuario
 
@@ -179,7 +188,7 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 | Situación | Mensaje | Acción |
 |---|---|---|
 | Shizuku inactivo | "Kopi no puede detectar lo que copias. Shizuku se desactivó al reiniciar." | **Reactivar Shizuku** |
-| HiOS detuvo el servicio | "Kopi se detuvo por el ahorro de batería." | **Quitar restricción** |
+| Shizuku activo pero el daemon no responde | "Kopi no se está ejecutando." | **Iniciar Kopi** |
 | Huella rechazada | "Este teléfono ya no está vinculado a tu Mac." | **Vincular de nuevo** |
 | Versión incompatible | "Kopi está desactualizado en tu Mac (v1.0). Actualízalo para seguir sincronizando." | **Ver cómo actualizar** |
 | Imagen demasiado grande | "Imagen no enviada: pesa 34 MB (máximo 20 MB)." | — |
@@ -188,7 +197,7 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 ### Confirmaciones y casos silenciosos
 
 - **Mac:** al recibir algo, el icono hace un pulso breve, sin notificación.
-- **Android:** se actualiza la línea "Último: …" de la notificación fija.
+- **Android:** se actualiza la línea "Último: …" de la notificación fija. La publica el daemon como `com.android.shell` (*best effort*); si no se puede, el estado solo se ve en la pantalla de la app.
 - **Sin aviso al usuario:** descartar contenido de más de 2 minutos al reconectar, una imagen interrumpida a mitad de la transferencia y las conversiones de formato. Todo esto solo se registra en el log interno.
 
 ## 9. Pruebas
@@ -204,10 +213,15 @@ Los mensajes siguen la guía de *ux-heuristics*: dicen qué pasó y cómo se res
 
 | Riesgo | Mitigación |
 |---|---|
-| HiOS no entrega `OnPrimaryClipChangedListener` en segundo plano aunque el permiso esté concedido | **Primera tarea del plan: un experimento en el Tecno.** Alternativa: consultar el portapapeles cada pocos segundos desde el servicio, vía Shizuku. |
-| mDNS bloqueado en el hotspot de HiOS | Comprobarlo en el mismo experimento. Alternativa: la IP del gateway es conocida (el teléfono es el router), así que se puede probar la conexión directa a la última IP conocida de la Mac. |
+| ~~HiOS no entrega `OnPrimaryClipChangedListener` en segundo plano~~ | **Confirmado** en el experimento: ni el listener ni el sondeo funcionan en la app, y HiOS la congela. Resuelto moviendo la sincronización a `KopiDaemon` (shell). |
+| El `UserService` de Shizuku no conecta (en el experimento nunca llegó el callback) | La Task 14 valida primero, en el dispositivo, que el daemon arranca como shell. Si no, se detiene y se replantea. |
+| Firmas ocultas de `IClipboard` cambian entre versiones de Android | Elegir la sobrecarga y rellenar argumentos con una función pura probada contra varias firmas; registrar la firma elegida. |
+| Shell no puede leer el URI de una imagen copiada en Android | *Best effort*: solo texto de Android → Mac, con el motivo en el log. |
+| La app que pega no puede leer el `content://` de una imagen Mac → Android (permiso del URI o app congelada) | Validarlo en el dispositivo en la Task 14; si falla, las imágenes Mac → Android quedan fuera de la v1. |
+| La notificación como `com.android.shell` falla | El estado sigue visible en la app. |
+| mDNS bloqueado en el hotspot de HiOS | En el Wi-Fi de casa NSD resolvió en 0,2 s; el hotspot se mide en la Task 16. Alternativa: conectar directo a la última IP conocida de la Mac. |
 | `SMAppService` o los permisos fallan en una app sin firmar | Firma ad-hoc (`codesign -s -`) en el script de bundle; documentar que hay que permitirla en Ajustes la primera vez. |
-| Shizuku se desactiva en cada reinicio | Mensaje claro con la acción **Reactivar Shizuku**. Recibir desde la Mac sigue funcionando. |
+| Shizuku se desactiva en cada reinicio | Mensaje claro con la acción **Reactivar Shizuku** al abrir la app. Hasta reactivarlo no se lee ni se envía nada (el daemon también se detiene). |
 
 ## 11. Decisiones del diseñador (revisables)
 
