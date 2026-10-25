@@ -25,7 +25,7 @@ data class Hello(val protocolVersion: Int, val app: String) : KopiMessage
 
 @Serializable
 @SerialName("pair")
-data class Pair(val code: String, val name: String) : KopiMessage
+data class PairRequest(val code: String, val name: String) : KopiMessage
 
 @Serializable
 @SerialName("paired")
@@ -66,7 +66,7 @@ data class ClipRequest(val id: String) : KopiMessage
 
 @Serializable
 @SerialName("clip_data")
-data class ClipData(val id: String, val size: Int) : KopiMessage
+data class ClipDataHeader(val id: String, val size: Int) : KopiMessage
 
 @Serializable
 enum class UnavailableReason {
