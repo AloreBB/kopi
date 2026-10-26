@@ -7,10 +7,8 @@ import dev.alorebb.kopi.core.KopiError
 import dev.alorebb.kopi.core.KopiJson
 import dev.alorebb.kopi.core.KopiMessage
 import dev.alorebb.kopi.core.Limits
-import dev.alorebb.kopi.core.PairRequest
 import dev.alorebb.kopi.core.Paired
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
@@ -39,6 +37,7 @@ import okio.ByteString.Companion.toByteString
 import java.nio.ByteBuffer
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLException
 import javax.net.ssl.SSLContext
 import javax.net.ssl.X509TrustManager
 
@@ -50,6 +49,9 @@ sealed interface PeerState {
     data object NotFound : PeerState
     data object NotPaired : PeerState
     data object VersionMismatch : PeerState
+
+    /** No Mac stored, and the Mac found already has another phone (it rejected this one's certificate). */
+    data object MacBusy : PeerState
 }
 
 /** The pairing state PeerClient reads and writes. Implemented by [dev.alorebb.kopi.daemon.DaemonState]. */
@@ -66,17 +68,23 @@ interface NsdDiscovery {
     suspend fun discover(): Endpoint?
 }
 
-/** Opens a WebSocket to [endpoint] that only trusts a server certificate with [fingerprint]. */
+/**
+ * Opens a WebSocket to [endpoint] that only trusts a server certificate with [fingerprint], or any
+ * certificate when [fingerprint] is null (trust on first use). [onServerFingerprint] gets the
+ * fingerprint of the certificate the server presented, during the TLS handshake.
+ */
 interface WsConnector {
-    fun connect(endpoint: Endpoint, fingerprint: String, listener: WebSocketListener): WebSocket
+    fun connect(
+        endpoint: Endpoint,
+        fingerprint: String?,
+        listener: WebSocketListener,
+        onServerFingerprint: (String) -> Unit = {},
+    ): WebSocket
 }
-
-/** The Mac rejected pairing with [code]. */
-class PairingException(val code: ErrorCode) : Exception("pairing rejected: $code")
 
 /** Real connector: OkHttp over mutual TLS 1.3 with fingerprint pinning and 30 s pings. */
 class OkHttpConnector(
-    private val tls: (fingerprint: String) -> Pair<SSLContext, X509TrustManager>,
+    private val tls: (fingerprint: String?, onServerFingerprint: (String) -> Unit) -> Pair<SSLContext, X509TrustManager>,
 ) : WsConnector {
     private val base = OkHttpClient.Builder()
         .pingInterval(Limits.PING_INTERVAL_SECONDS.toLong(), TimeUnit.SECONDS)
@@ -84,8 +92,13 @@ class OkHttpConnector(
         .connectionSpecs(listOf(ConnectionSpec.Builder(ConnectionSpec.RESTRICTED_TLS).tlsVersions(TlsVersion.TLS_1_3).build()))
         .build()
 
-    override fun connect(endpoint: Endpoint, fingerprint: String, listener: WebSocketListener): WebSocket {
-        val (context, trustManager) = tls(fingerprint)
+    override fun connect(
+        endpoint: Endpoint,
+        fingerprint: String?,
+        listener: WebSocketListener,
+        onServerFingerprint: (String) -> Unit,
+    ): WebSocket {
+        val (context, trustManager) = tls(fingerprint, onServerFingerprint)
         val client = base.newBuilder()
             .sslSocketFactory(context.socketFactory, trustManager)
             .hostnameVerifier(PinnedTls.hostnameVerifier)
@@ -98,7 +111,9 @@ class OkHttpConnector(
 /**
  * The phone side of the protocol: finds the Mac (NSD, falling back to the last known
  * address after [nsdTimeoutMs]), connects with the pinned fingerprint, runs the
- * handshake and keeps reconnecting with [Backoff]. Never logs clipboard contents.
+ * handshake and keeps reconnecting with [Backoff]. With no Mac stored it pairs on its own:
+ * the first `_kopi._tcp` Mac found that accepts this phone is trusted and remembered.
+ * Never logs clipboard contents.
  */
 class PeerClient(
     private val scope: CoroutineScope,
@@ -107,6 +122,7 @@ class PeerClient(
     private val connector: WsConnector,
     private val nsdTimeoutMs: Long = 5_000,
     private val handshakeTimeoutMs: Long = 15_000,
+    private val phoneName: () -> String = { "Android" },
     private val log: (String) -> Unit = {},
 ) {
     private val _state = MutableStateFlow<PeerState>(PeerState.Searching)
@@ -129,7 +145,19 @@ class PeerClient(
     fun start() {
         scope.launch {
             loopLock.withLock {
-                if (loopJob?.isActive != true) loopJob = scope.launch { run(null) }
+                if (loopJob?.isActive != true) loopJob = scope.launch { run() }
+            }
+        }
+    }
+
+    /** Drops the connection and starts over right away, e.g. after the stored Mac was forgotten. */
+    fun restart() {
+        scope.launch {
+            loopLock.withLock {
+                loopJob?.cancelAndJoin()
+                backoff.reset()
+                _state.value = PeerState.Searching
+                loopJob = scope.launch { run() }
             }
         }
     }
@@ -149,19 +177,6 @@ class PeerClient(
     fun onNetworkChanged() {
         backoff.reset()
         wake.trySend(Unit)
-    }
-
-    /** Pairs with the Mac in [uri]; on success the connection stays up and the Mac's name is returned. */
-    suspend fun pair(uri: PairingUri, phoneName: String): Result<String> {
-        val result = CompletableDeferred<Result<String>>()
-        val attempt = PairingAttempt(uri, phoneName, result)
-        loopLock.withLock {
-            loopJob?.cancelAndJoin()
-            val job = scope.launch { run(attempt) }
-            job.invokeOnCompletion { result.complete(Result.failure(CancellationException("pairing stopped"))) }
-            loopJob = job
-        }
-        return result.await()
     }
 
     fun send(m: KopiMessage): Boolean {
@@ -196,37 +211,24 @@ class PeerClient(
 
     // MARK: - Connection loop
 
-    private class PairingAttempt(val uri: PairingUri, val phoneName: String, val result: CompletableDeferred<Result<String>>)
+    private enum class End { DROPPED, FAILED, NOT_PAIRED, VERSION_MISMATCH, MAC_BUSY }
 
-    private enum class End { DROPPED, FAILED, NOT_PAIRED, VERSION_MISMATCH }
-
-    private suspend fun run(initialPairing: PairingAttempt?) {
-        var pairing = initialPairing
+    private suspend fun run() {
         while (true) {
-            val endpoint: Endpoint
-            val fingerprint: String
-            if (pairing != null) {
-                endpoint = Endpoint(pairing.uri.host, pairing.uri.port)
-                fingerprint = pairing.uri.fingerprint
-            } else {
-                fingerprint = store.pairedFingerprint() ?: run {
-                    _state.value = PeerState.NotPaired
-                    return
-                }
-                if (_state.value !is PeerState.NotFound) _state.value = PeerState.Searching
-                val found = withTimeoutOrNull(nsdTimeoutMs) { nsd.discover() } ?: store.lastEndpoint()
-                if (found == null) {
-                    log("mac not found")
-                    _state.value = PeerState.NotFound
-                    waitToRetry()
-                    continue
-                }
-                endpoint = found
+            // null: no Mac stored yet, so pair with the first one found (trust on first use).
+            val fingerprint = store.pairedFingerprint()
+            val s = _state.value
+            if (s !is PeerState.NotFound && s !is PeerState.MacBusy) _state.value = PeerState.Searching
+            val endpoint = withTimeoutOrNull(nsdTimeoutMs) { nsd.discover() }
+                ?: if (fingerprint != null) store.lastEndpoint() else null
+            if (endpoint == null) {
+                log("mac not found")
+                _state.value = PeerState.NotFound
+                waitToRetry()
+                continue
             }
 
-            val end = session(endpoint, fingerprint, pairing)
-            pairing = null
-            when (end) {
+            when (session(endpoint, fingerprint)) {
                 End.NOT_PAIRED -> {
                     _state.value = PeerState.NotPaired
                     return
@@ -235,6 +237,11 @@ class PeerClient(
                     _state.value = PeerState.VersionMismatch
                     return
                 }
+                End.MAC_BUSY -> {
+                    _state.value = PeerState.MacBusy
+                    waitToRetry(MAC_BUSY_RETRY_MS)
+                    continue
+                }
                 End.DROPPED -> _state.value = PeerState.Searching
                 End.FAILED -> _state.value = PeerState.NotFound
             }
@@ -242,28 +249,30 @@ class PeerClient(
         }
     }
 
-    private suspend fun waitToRetry() {
-        val delayMs = backoff.next()
+    private suspend fun waitToRetry(delayMs: Long = backoff.next()) {
         withTimeoutOrNull(delayMs) { wake.receive() }
     }
 
     private sealed interface Event {
+        /** The fingerprint of the certificate the server presented (sent during the TLS handshake). */
+        data class ServerCertificate(val fingerprint: String) : Event
         data class Text(val text: String) : Event
         data class Binary(val bytes: ByteString) : Event
-        data object Closed : Event
+        data class Closed(val tlsRejected: Boolean = false) : Event
     }
 
     private sealed interface Handshake {
-        data object Ready : Handshake
-        data class PairedWith(val name: String) : Handshake
+        data class Ready(val macName: String, val serverFingerprint: String?) : Handshake
         data class Rejected(val code: ErrorCode) : Handshake
-        data object Failed : Handshake
+        data class Failed(val tlsRejected: Boolean) : Handshake
     }
 
-    /** One connection, from opening to close. Returns why it ended. */
-    private suspend fun session(endpoint: Endpoint, fingerprint: String, pairing: PairingAttempt?): End {
+    /** One connection, from opening to close. [fingerprint] null = trust on first use. Returns why it ended. */
+    private suspend fun session(endpoint: Endpoint, fingerprint: String?): End {
+        val tofu = fingerprint == null
         val events = Channel<Event>(Channel.UNLIMITED)
         val listener = object : WebSocketListener() {
+
             override fun onMessage(webSocket: WebSocket, text: String) {
                 events.trySend(Event.Text(text))
             }
@@ -274,59 +283,55 @@ class PeerClient(
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
                 webSocket.close(NORMAL_CLOSURE, null)
-                events.trySend(Event.Closed)
+                events.trySend(Event.Closed())
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                events.trySend(Event.Closed)
+                events.trySend(Event.Closed())
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 log("connection failed: ${t.javaClass.simpleName}")
-                events.trySend(Event.Closed)
+                // The Mac refusing this phone's certificate surfaces as a TLS alert.
+                events.trySend(Event.Closed(tlsRejected = response == null && isTlsFailure(t)))
             }
         }
 
         val socket = try {
-            connector.connect(endpoint, fingerprint, listener)
+            connector.connect(endpoint, fingerprint, listener) { events.trySend(Event.ServerCertificate(it)) }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             log("connect failed: ${e.javaClass.simpleName}")
-            pairing?.result?.complete(Result.failure(e))
             return End.FAILED
         }
 
         try {
-            socket.send(encode(Hello(Limits.PROTOCOL_VERSION, Limits.APP_VERSION)))
-            if (pairing != null) socket.send(encode(PairRequest(pairing.uri.code, pairing.phoneName)))
+            socket.send(encode(Hello(Limits.PROTOCOL_VERSION, Limits.APP_VERSION, phoneName())))
 
-            val handshake = withTimeoutOrNull(handshakeTimeoutMs) { handshake(events, pairing != null) }
-                ?: Handshake.Failed
+            val handshake = withTimeoutOrNull(handshakeTimeoutMs) { handshake(events) } ?: Handshake.Failed(false)
             val macName: String
             when (handshake) {
-                Handshake.Failed -> {
-                    pairing?.result?.complete(Result.failure(java.io.IOException("handshake failed")))
-                    return End.FAILED
-                }
+                is Handshake.Failed -> return if (tofu && handshake.tlsRejected) End.MAC_BUSY else End.FAILED
                 is Handshake.Rejected -> {
                     log("handshake rejected code=${handshake.code}")
-                    pairing?.result?.complete(Result.failure(PairingException(handshake.code)))
                     return when (handshake.code) {
                         ErrorCode.VERSION_MISMATCH -> End.VERSION_MISMATCH
-                        // While pairing, fall back to the stored pairing (if any).
-                        ErrorCode.NOT_PAIRED -> if (pairing != null) End.FAILED else End.NOT_PAIRED
-                        ErrorCode.INVALID_CODE -> End.FAILED
+                        ErrorCode.NOT_PAIRED -> if (tofu) End.MAC_BUSY else End.NOT_PAIRED
                     }
                 }
-                is Handshake.PairedWith -> {
-                    store.savePairing(fingerprint, handshake.name, endpoint)
-                    macName = handshake.name
-                    log("paired")
-                    pairing?.result?.complete(Result.success(handshake.name))
-                }
-                Handshake.Ready -> {
-                    store.saveLastEndpoint(endpoint)
-                    macName = store.pairedMacName() ?: endpoint.host
+                is Handshake.Ready -> {
+                    macName = handshake.macName.ifBlank { store.pairedMacName() ?: endpoint.host }
+                    if (tofu) {
+                        // The Mac accepted this phone, so it is ours: remember its certificate.
+                        val seen = handshake.serverFingerprint ?: run {
+                            log("pairing failed reason=no_server_certificate")
+                            return End.FAILED
+                        }
+                        store.savePairing(seen, macName, endpoint)
+                        log("paired")
+                    } else {
+                        store.savePairing(fingerprint!!, macName, endpoint)
+                    }
                 }
             }
 
@@ -341,36 +346,35 @@ class PeerClient(
         }
     }
 
-    private suspend fun handshake(events: Channel<Event>, pairing: Boolean): Handshake {
-        var gotHello = false
+    /** Waits for the Mac's hello. A `paired` that follows it arrives in [receive] and is ignored. */
+    private suspend fun handshake(events: Channel<Event>): Handshake {
+        var serverFingerprint: String? = null
         for (event in events) {
             when (event) {
+                is Event.ServerCertificate -> serverFingerprint = event.fingerprint
                 is Event.Text -> when (val m = decode(event.text)) {
                     is Hello -> {
                         if (m.protocolVersion != Limits.PROTOCOL_VERSION) return Handshake.Rejected(ErrorCode.VERSION_MISMATCH)
-                        if (!pairing) return Handshake.Ready
-                        gotHello = true
+                        return Handshake.Ready(m.name, serverFingerprint)
                     }
-                    is Paired -> if (gotHello) return Handshake.PairedWith(m.name)
                     is KopiError -> return Handshake.Rejected(m.code)
                     else -> Unit
                 }
                 is Event.Binary -> Unit
-                Event.Closed -> return Handshake.Failed
+                is Event.Closed -> return Handshake.Failed(event.tlsRejected)
             }
         }
-        return Handshake.Failed
+        return Handshake.Failed(false)
     }
 
     private suspend fun receive(events: Channel<Event>): End {
         for (event in events) {
             when (event) {
                 is Event.Text -> when (val m = decode(event.text)) {
-                    null, is Hello -> Unit
+                    null, is Hello, is Paired -> Unit
                     is KopiError -> when (m.code) {
                         ErrorCode.NOT_PAIRED -> return End.NOT_PAIRED
                         ErrorCode.VERSION_MISMATCH -> return End.VERSION_MISMATCH
-                        ErrorCode.INVALID_CODE -> Unit
                     }
                     else -> _incoming.emit(m)
                 }
@@ -379,7 +383,8 @@ class PeerClient(
                     if (chunk == null) log("ignored malformed binary frame size=${event.bytes.size}")
                     else _imageChunks.emit(chunk)
                 }
-                Event.Closed -> {
+                is Event.ServerCertificate -> Unit
+                is Event.Closed -> {
                     log("disconnected")
                     return End.DROPPED
                 }
@@ -401,6 +406,15 @@ class PeerClient(
         private const val UUID_BYTES = 16
         private const val MAX_QUEUED_BYTES = 4L * 1024 * 1024
         private const val QUEUE_POLL_MS = 20L
+        private const val MAC_BUSY_RETRY_MS = 30_000L
+
+        /**
+         * Whether [t] comes from a failed TLS handshake. OkHttp reports the last route's error and
+         * keeps earlier ones (e.g. the TLS alert on IPv4 before IPv6 was refused) as suppressed.
+         */
+        fun isTlsFailure(t: Throwable): Boolean =
+            generateSequence(t) { it.cause?.takeIf { c -> c !== it } }
+                .any { e -> e is SSLException || e.suppressed.any { it is SSLException } }
 
         /** The UUID's 16 bytes, big-endian, as on the wire. */
         fun uuidBytes(id: String): ByteArray {

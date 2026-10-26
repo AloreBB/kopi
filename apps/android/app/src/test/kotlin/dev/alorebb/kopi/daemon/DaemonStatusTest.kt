@@ -6,14 +6,15 @@ import dev.alorebb.kopi.net.PeerState
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class DaemonStatusTest {
     @Test
     fun jsonRoundTrips() {
-        val status = DaemonStatus("connected", "MacBook Air", "Hola", 1_761_400_000_000, "ready")
+        val status = DaemonStatus("connected", "MacBook Air", "Hola", 1_761_400_000_000, "ready", paired = true, vpn = true)
         assertEquals(status, DaemonStatus.fromJson(status.toJson()))
-        assertEquals(DaemonStatus("unpaired", access = "denied"), DaemonStatus.fromJson("""{"state":"unpaired","access":"denied"}"""))
+        assertEquals(DaemonStatus("searching", access = "denied"), DaemonStatus.fromJson("""{"state":"searching","access":"denied"}"""))
         assertNull(DaemonStatus.fromJson("{"))
     }
 
@@ -23,17 +24,31 @@ class DaemonStatusTest {
         assertEquals("connected", status.state)
         assertEquals("MacBook Air", status.macName)
         assertEquals("ready", status.access)
+        assertTrue(status.paired)
     }
 
     @Test
-    fun unpairedWhenNoMac() {
-        val status = DaemonStatus.of(PeerState.NotPaired, paired = false, macName = null, last = null, access = false)
-        assertEquals("unpaired", status.state)
-        assertEquals("denied", status.access)
+    fun peerStatesMapToNames() {
         assertEquals("not_found", DaemonStatus.of(PeerState.NotFound, true, "MacBook Air", null, true).state)
         assertEquals("not_paired", DaemonStatus.of(PeerState.NotPaired, true, "MacBook Air", null, true).state)
         assertEquals("version_mismatch", DaemonStatus.of(PeerState.VersionMismatch, true, "MacBook Air", null, true).state)
         assertEquals("searching", DaemonStatus.of(PeerState.Searching, true, "MacBook Air", null, true).state)
+        assertEquals("mac_busy", DaemonStatus.of(PeerState.MacBusy, false, null, null, true).state)
+    }
+
+    @Test
+    fun unpairedStillReportsTheSearch() {
+        val status = DaemonStatus.of(PeerState.Searching, paired = false, macName = null, last = null, access = false)
+        assertEquals("searching", status.state)
+        assertFalse(status.paired)
+        assertNull(status.macName)
+        assertEquals("denied", status.access)
+    }
+
+    @Test
+    fun carriesVpn() {
+        assertTrue(DaemonStatus.of(PeerState.NotFound, true, "MacBook Air", null, true, vpn = true).vpn)
+        assertFalse(DaemonStatus.of(PeerState.NotFound, true, "MacBook Air", null, true).vpn)
     }
 
     @Test

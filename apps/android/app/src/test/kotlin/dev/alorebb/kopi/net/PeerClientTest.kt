@@ -93,7 +93,7 @@ class PeerClientTest {
         val mac = serve(macReplies())
         val endpoint = Endpoint(server.hostName, server.port)
         val store = InMemoryPeerStore(macFp, "MacBook Air")
-        val client = PeerClient(scope, store, FixedNsd(endpoint), tlsConnector())
+        val client = PeerClient(scope, store, FixedNsd(endpoint), tlsConnector(), phoneName = { PHONE })
         client.start()
 
         assertJsonEquals(fixture("hello"), mac.nextText())
@@ -122,50 +122,69 @@ class PeerClientTest {
     }
 
     @Test
-    fun pairFlowStoresMac() = runBlocking {
-        val mac = serve(macReplies(onPair = listOf(Paired("MacBook Air"))))
+    fun autoPairsWithFirstMacFound() = runBlocking {
+        val mac = serve(macReplies(alsoPaired = true))
+        val endpoint = Endpoint(server.hostName, server.port)
         val store = InMemoryPeerStore()
-        val client = PeerClient(scope, store, FixedNsd(null), tlsConnector())
-        val uri = PairingUri(server.hostName, server.port, macFp, "q7Lr0Zb2Vx9KmT4nPa1cWg")
+        val client = PeerClient(scope, store, FixedNsd(endpoint), tlsConnector(), phoneName = { PHONE })
+        client.start()
 
-        val result = withTimeout(5_000) { client.pair(uri, "Tecno Camon 40 Pro") }
-
-        assertEquals("MacBook Air", result.getOrThrow())
         assertJsonEquals(fixture("hello"), mac.nextText())
-        assertJsonEquals(fixture("pair"), mac.nextText())
-        assertEquals("MacBook Air", store.pairedMacName())
-        assertEquals(macFp, store.pairedFingerprint())
-        assertEquals(Endpoint(server.hostName, server.port), store.lastEndpoint())
         withTimeout(5_000) { client.state.first { it == PeerState.Connected("MacBook Air") } }
+        assertEquals(macFp, store.pairedFingerprint())
+        assertEquals("MacBook Air", store.pairedMacName())
+        assertEquals(endpoint, store.lastEndpoint())
     }
 
     @Test
-    fun invalidCodeFailsPair() = runBlocking {
-        serve(macReplies(onPair = listOf(KopiError(ErrorCode.INVALID_CODE))))
+    fun autoPairsWhenMacAlreadyKnowsThisPhone() = runBlocking {
+        // After "Desvincular" on the phone only, the Mac still accepts it and answers hello alone.
+        serve(macReplies())
         val store = InMemoryPeerStore()
-        val client = PeerClient(scope, store, FixedNsd(null), tlsConnector())
-        val uri = PairingUri(server.hostName, server.port, macFp, "q7Lr0Zb2Vx9KmT4nPa1cWg")
+        val client = PeerClient(scope, store, FixedNsd(Endpoint(server.hostName, server.port)), tlsConnector())
+        client.start()
 
-        val result = withTimeout(5_000) { client.pair(uri, "Tecno Camon 40 Pro") }
-
-        val error = result.exceptionOrNull()
-        assertTrue(error is PairingException && error.code == ErrorCode.INVALID_CODE, "got $error")
-        assertNull(store.pairedFingerprint())
-        assertNull(store.pairedMacName())
+        withTimeout(5_000) { client.state.first { it == PeerState.Connected("MacBook Air") } }
+        assertEquals(macFp, store.pairedFingerprint())
     }
 
     @Test
-    fun pairRejectsUnpinnedMac() = runBlocking {
-        serve(macReplies(onPair = listOf(Paired("MacBook Air"))))
-        val store = InMemoryPeerStore()
-        val client = PeerClient(scope, store, FixedNsd(null), tlsConnector())
-        val wrongFp = "0".repeat(64)
-        val uri = PairingUri(server.hostName, server.port, wrongFp, "q7Lr0Zb2Vx9KmT4nPa1cWg")
+    fun pinnedMacRejectsOtherServer() = runBlocking {
+        serve(macReplies())
+        val store = InMemoryPeerStore("0".repeat(64), "MacBook Air")
+        val client = PeerClient(scope, store, FixedNsd(Endpoint(server.hostName, server.port)), tlsConnector())
+        client.start()
 
-        val result = withTimeout(5_000) { client.pair(uri, "Tecno Camon 40 Pro") }
+        withTimeout(5_000) { client.state.first { it == PeerState.NotFound } }
+        assertEquals("0".repeat(64), store.pairedFingerprint())
+    }
 
-        assertTrue(result.isFailure)
-        assertNull(store.pairedFingerprint())
+    @Test
+    fun macWithAnotherPhoneIsBusy() = runBlocking {
+        // A Mac paired with another phone rejects this phone's certificate during the TLS handshake.
+        val busyTls = SSLContext.getInstance("TLSv1.3").apply {
+            init(
+                arrayOf(HandshakeCertificates.Builder().heldCertificate(macCert).build().keyManager),
+                arrayOf(PinnedTls.trustManager("0".repeat(64))),
+                null,
+            )
+        }
+        val busy = MockWebServer().apply {
+            useHttps(busyTls.socketFactory, false)
+            requireClientAuth()
+            enqueue(MockResponse().withWebSocketUpgrade(MacScript(macReplies(alsoPaired = true))))
+            start()
+        }
+        try {
+            val store = InMemoryPeerStore()
+            val client = PeerClient(scope, store, FixedNsd(Endpoint(busy.hostName, busy.port)), tlsConnector())
+            client.start()
+
+            withTimeout(5_000) { client.state.first { it == PeerState.MacBusy } }
+            assertNull(store.pairedFingerprint())
+        } finally {
+            busy.shutdown()
+        }
     }
 
     @Test
@@ -243,6 +262,67 @@ class PeerClientTest {
     }
 
     @Test
+    fun macBusyRetriesEvery30Seconds() = runTest {
+        val connector = FakeConnector(null, failure = javax.net.ssl.SSLHandshakeException("bad_certificate"))
+        val client = PeerClient(backgroundScope, InMemoryPeerStore(), FixedNsd(lan), connector)
+        client.start()
+        runCurrent()
+        assertEquals(PeerState.MacBusy, client.state.value)
+        assertEquals(listOf<String?>(null), connector.fingerprints)
+
+        advanceTimeBy(29_999); runCurrent(); assertEquals(1, connector.endpoints.size)
+        advanceTimeBy(1); runCurrent(); assertEquals(2, connector.endpoints.size)
+        assertEquals(PeerState.MacBusy, client.state.value)
+        advanceTimeBy(30_000); runCurrent(); assertEquals(3, connector.endpoints.size)
+    }
+
+    @Test
+    fun notPairedErrorWhileUnpairedMeansBusy() = runTest {
+        val connector = FakeConnector(listOf(KopiError(ErrorCode.NOT_PAIRED)))
+        val client = PeerClient(backgroundScope, InMemoryPeerStore(), FixedNsd(lan), connector)
+        client.start()
+        runCurrent()
+        assertEquals(PeerState.MacBusy, client.state.value)
+    }
+
+    @Test
+    fun unpairedUsesNsdOnly() = runTest {
+        val connector = FakeConnector(listOf(hello()))
+        val client = PeerClient(backgroundScope, InMemoryPeerStore(last = lan), SilentNsd, connector)
+        client.start()
+        advanceTimeBy(5_001); runCurrent()
+        assertEquals(PeerState.NotFound, client.state.value)
+        assertTrue(connector.endpoints.isEmpty())
+    }
+
+    @Test
+    fun restartRetriesRightAway() = runTest {
+        val connector = FakeConnector(null)
+        val client = PeerClient(backgroundScope, InMemoryPeerStore(macFp, "MacBook Air"), FixedNsd(lan), connector)
+        client.start()
+        runCurrent()
+        advanceTimeBy(1_000); runCurrent()
+        advanceTimeBy(2_000); runCurrent()
+        assertEquals(3, connector.endpoints.size)
+
+        client.restart()
+        runCurrent()
+        assertEquals(4, connector.endpoints.size)
+    }
+
+    @Test
+    fun pinnedConnectionUsesStoredFingerprintAndMacName() = runTest {
+        val connector = FakeConnector(listOf(hello()))
+        val store = InMemoryPeerStore(macFp, "Old name")
+        val client = PeerClient(backgroundScope, store, FixedNsd(lan), connector)
+        client.start()
+        runCurrent()
+        assertEquals(listOf<String?>(macFp), connector.fingerprints)
+        assertEquals(PeerState.Connected("MacBook Air"), client.state.value)
+        assertEquals("MacBook Air", store.pairedMacName())
+    }
+
+    @Test
     fun fallsBackToLastHost() = runTest {
         val last = Endpoint("192.168.1.20", Limits.SERVER_PORT)
         val store = InMemoryPeerStore(macFp, "MacBook Air", last)
@@ -300,12 +380,15 @@ class PeerClientTest {
 
     private val lan = Endpoint("192.168.1.10", Limits.SERVER_PORT)
 
-    private fun hello() = Hello(Limits.PROTOCOL_VERSION, Limits.APP_VERSION)
+    private companion object {
+        const val PHONE = "Tecno Camon 40 Pro"
+    }
 
-    private fun macReplies(onPair: List<KopiMessage> = emptyList()): (KopiMessage) -> List<KopiMessage> = { m ->
+    private fun hello() = Hello(Limits.PROTOCOL_VERSION, Limits.APP_VERSION, "MacBook Air")
+
+    private fun macReplies(alsoPaired: Boolean = false): (KopiMessage) -> List<KopiMessage> = { m ->
         when (m) {
-            is Hello -> listOf(hello())
-            is dev.alorebb.kopi.core.PairRequest -> onPair
+            is Hello -> if (alsoPaired) listOf(hello(), Paired("MacBook Air")) else listOf(hello())
             else -> emptyList()
         }
     }
@@ -316,12 +399,12 @@ class PeerClientTest {
         return script
     }
 
-    private fun tlsConnector() = OkHttpConnector { fp ->
+    private fun tlsConnector() = OkHttpConnector { fp, onSeen ->
         val store = KeyStore.getInstance("PKCS12").apply {
             load(null, null)
             setKeyEntry(PinnedTls.ALIAS, phoneCert.keyPair.private, pw, arrayOf(phoneCert.certificate))
         }
-        PinnedTls.sslContext(fp, store, PinnedTls.ALIAS, pw)
+        PinnedTls.sslContext(fp, store, PinnedTls.ALIAS, pw, onSeen)
     }
 
     private fun fixture(name: String) = File(System.getProperty("kopi.fixtures"), "$name.json").readText()
@@ -389,14 +472,24 @@ private object SilentNsd : NsdDiscovery {
     override suspend fun discover(): Endpoint? = awaitCancellation()
 }
 
-/** Scripted connector: [onHello] is what the "Mac" answers to hello; null makes every connection fail. */
-private class FakeConnector(private val onHello: List<KopiMessage>?) : WsConnector {
+/** Scripted connector: [onHello] is what the "Mac" answers to hello; null makes every connection fail with [failure]. */
+private class FakeConnector(
+    private val onHello: List<KopiMessage>?,
+    private val failure: Exception = IOException("connection refused"),
+) : WsConnector {
     val endpoints = mutableListOf<Endpoint>()
+    val fingerprints = mutableListOf<String?>()
 
-    override fun connect(endpoint: Endpoint, fingerprint: String, listener: WebSocketListener): WebSocket {
+    override fun connect(
+        endpoint: Endpoint,
+        fingerprint: String?,
+        listener: WebSocketListener,
+        onServerFingerprint: (String) -> Unit,
+    ): WebSocket {
         endpoints += endpoint
+        fingerprints += fingerprint
         val socket = FakeSocket(listener, onHello.orEmpty())
-        if (onHello == null) listener.onFailure(socket, IOException("connection refused"), null)
+        if (onHello == null) listener.onFailure(socket, failure, null)
         return socket
     }
 

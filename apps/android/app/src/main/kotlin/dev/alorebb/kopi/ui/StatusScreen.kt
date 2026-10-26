@@ -39,18 +39,15 @@ private val Amber = Color(0xFFF9A825)
 fun StatusScreen(
     ui: UiState,
     onAction: (Int) -> Unit,
-    onPairAgain: () -> Unit,
     onUnpair: () -> Unit,
     onStop: () -> Unit,
 ) {
     val model = ui.model
     var confirmUnpair by rememberSaveable { mutableStateOf(false) }
-    val pairAction = model.action == R.string.action_pair_again || model.action == R.string.action_scan_code
 
     Page(actions = {
         if (!ui.checking) {
             model.action?.let { PrimaryButton(stringResource(it), { onAction(it) }) }
-            if (ui.paired && !pairAction) SecondaryButton(stringResource(R.string.action_pair_again), onPairAgain)
             if (ui.paired) QuietButton(stringResource(R.string.action_unpair), { confirmUnpair = true }, MaterialTheme.colorScheme.error)
             if (ui.daemonReachable) QuietButton(stringResource(R.string.action_stop_kopi), onStop)
         }
@@ -112,7 +109,7 @@ private fun title(model: StatusModel): String =
 
 @Composable
 private fun dotColor(model: StatusModel, state: String?): Color = when {
-    model.action != null -> MaterialTheme.colorScheme.error
+    model.problem -> MaterialTheme.colorScheme.error
     state == "connected" -> Green
     else -> Amber
 }

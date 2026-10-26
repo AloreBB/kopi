@@ -4,7 +4,10 @@ import android.content.Intent
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -14,10 +17,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import dev.alorebb.kopi.R
@@ -30,7 +36,8 @@ fun SetupScreen(
     step: Int,
     ui: UiState,
     onStep: (Int) -> Unit,
-    onScan: () -> Unit,
+    onAction: (Int) -> Unit,
+    onDone: () -> Unit,
     onGrantShizuku: () -> Boolean,
     open: (Intent) -> Unit,
     shizukuOpenIntent: Intent,
@@ -41,7 +48,7 @@ fun SetupScreen(
     when (step) {
         1 -> ShizukuStep(ui.shizuku, onNext = { onStep(2) }, onGrantShizuku, open, shizukuOpenIntent, shizukuInstallIntent)
         2 -> AutostartStep(ui.batteryUnrestricted, onNext = { onStep(3) }, open, batteryIntent)
-        else -> PairStep(onScan)
+        else -> ConnectStep(ui, onAction, onDone)
     }
 }
 
@@ -121,10 +128,57 @@ private fun AutostartStep(batteryUnrestricted: Boolean, onNext: () -> Unit, open
     }
 }
 
+/** After this long without a connection, say why the Mac may not be found. */
+private const val NOT_FOUND_AFTER_MS = 15_000L
+
+/**
+ * Automatic pairing: the daemon finds the Mac on the network and pairs on its own. Shows the
+ * search, then "Conectado a <Mac>", or the real cause when something is in the way.
+ */
 @Composable
-private fun PairStep(onScan: () -> Unit) {
-    Page(actions = { PrimaryButton(stringResource(R.string.action_scan_code), onScan) }) {
+private fun ConnectStep(ui: UiState, onAction: (Int) -> Unit, onDone: () -> Unit) {
+    val startedAt = rememberSaveable { System.currentTimeMillis() }
+    val model = ui.model
+    val state = ui.status?.state
+    val connected = !ui.checking && ui.daemonReachable && state == "connected"
+    // A problem with its own cause (Shizuku, Kopi stopped, Mac busy, old Mac app); "not found" waits for the timer.
+    val blocked = !ui.checking && !connected && model.problem && state != "not_found"
+    val slow = ui.nowMs - startedAt >= NOT_FOUND_AFTER_MS
+
+    Page(actions = {
+        when {
+            connected -> PrimaryButton(stringResource(R.string.action_done), onDone)
+            blocked -> model.action?.let { action -> PrimaryButton(stringResource(action), { onAction(action) }) }
+        }
+    }) {
         StepHeader(3, stringResource(R.string.setup_pair_title))
         Body(stringResource(R.string.setup_pair_body))
+        val live = Modifier.semantics { liveRegion = LiveRegionMode.Polite }
+        when {
+            connected -> Text(
+                stringResource(R.string.status_connected, ui.status?.macName ?: stringResource(R.string.your_mac)),
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = live,
+            )
+            blocked -> Column(live, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(model.title), style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+                model.detail?.let { Hint(stringResource(it)) }
+            }
+            slow -> Column(live, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.err_mac_not_found_yet), style = MaterialTheme.typography.titleMedium)
+                Hint(stringResource(if (ui.status?.vpn == true) R.string.vpn_hint else R.string.not_found_hint))
+                Searching(R.string.still_searching)
+            }
+            else -> Searching(R.string.status_searching, live)
+        }
+    }
+}
+
+@Composable
+private fun Searching(text: Int, modifier: Modifier = Modifier) {
+    Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+        Text(stringResource(text), style = MaterialTheme.typography.bodyLarge)
     }
 }
