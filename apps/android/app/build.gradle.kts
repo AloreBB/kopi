@@ -32,6 +32,8 @@ android {
         unitTests.all {
             it.useJUnitPlatform()
             it.systemProperty("kopi.fixtures", rootDir.resolve("../../protocol/fixtures").canonicalPath)
+            // On Linux, Robolectric's Conscrypt provider takes over TLS and reflects into java.net.
+            it.jvmArgs("--add-opens=java.base/java.net=ALL-UNNAMED")
         }
     }
     kotlin {
