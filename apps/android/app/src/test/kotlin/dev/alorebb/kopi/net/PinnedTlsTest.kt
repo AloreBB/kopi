@@ -42,6 +42,14 @@ class PinnedTlsTest {
     }
 
     @Test
+    fun trustOnFirstUseAcceptsAnyServer() {
+        val tm = PinnedTls.trustManager(null)
+        tm.checkServerTrusted(arrayOf(mac.cert), "ECDHE_ECDSA")
+        tm.checkServerTrusted(arrayOf(other.cert), "ECDHE_ECDSA")
+        assertThrows<CertificateException> { tm.checkServerTrusted(arrayOf(), "ECDHE_ECDSA") }
+    }
+
+    @Test
     fun keyManagerServesIdentityAlias() {
         val km = PinnedTls.keyManager(phone.keyStore(PinnedTls.ALIAS, pw), PinnedTls.ALIAS, pw)
         assertEquals(PinnedTls.ALIAS, km.chooseClientAlias(arrayOf("EC"), null, null))
