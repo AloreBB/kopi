@@ -14,7 +14,9 @@ import javax.net.ssl.X509TrustManager
 
 /**
  * Client TLS setup: presents the daemon's PKCS#12 identity and trusts the server only if its
- * leaf certificate's SHA-256 matches the fingerprint pinned at pairing time.
+ * leaf certificate's SHA-256 matches the fingerprint pinned at pairing time. With no pinned
+ * fingerprint yet (automatic pairing), any server certificate is accepted once: trust on first use,
+ * and the caller remembers the fingerprint it saw.
  */
 object PinnedTls {
     const val ALIAS = "kopi_identity"
@@ -24,26 +26,31 @@ object PinnedTls {
 
     /** [keyStore] holds the client key and chain under [alias]. */
     fun sslContext(
-        expectedFingerprint: String,
+        expectedFingerprint: String?,
         keyStore: KeyStore,
         alias: String,
         password: CharArray?,
+        onServerFingerprint: (String) -> Unit = {},
     ): Pair<SSLContext, X509TrustManager> {
-        val tm = trustManager(expectedFingerprint)
+        val tm = trustManager(expectedFingerprint, onServerFingerprint)
         val ctx = SSLContext.getInstance("TLSv1.3")
         ctx.init(arrayOf(keyManager(keyStore, alias, password)), arrayOf(tm), null)
         return ctx to tm
     }
 
-    fun trustManager(expectedFingerprint: String): X509TrustManager = PinnedTrustManager(expectedFingerprint)
+    /** [expectedFingerprint] null = trust on first use. [onSeen] gets every accepted leaf's fingerprint. */
+    fun trustManager(expectedFingerprint: String?, onSeen: (String) -> Unit = {}): X509TrustManager =
+        PinnedTrustManager(expectedFingerprint, onSeen)
 
     fun keyManager(keyStore: KeyStore, alias: String, password: CharArray?): X509ExtendedKeyManager =
         SingleAliasKeyManager(keyStore, alias, password)
 
-    private class PinnedTrustManager(private val expected: String) : X509TrustManager {
+    private class PinnedTrustManager(private val expected: String?, private val onSeen: (String) -> Unit) : X509TrustManager {
         override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {
             val leaf = chain?.firstOrNull() ?: throw CertificateException("empty server chain")
-            if (Fingerprint.of(leaf) != expected) throw CertificateException("server fingerprint mismatch")
+            val fingerprint = Fingerprint.of(leaf)
+            if (expected != null && fingerprint != expected) throw CertificateException("server fingerprint mismatch")
+            onSeen(fingerprint)
         }
 
         // Same rule when used server-side (tests); the phone itself only acts as a client.

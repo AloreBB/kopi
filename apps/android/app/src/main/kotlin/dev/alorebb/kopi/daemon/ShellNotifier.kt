@@ -73,7 +73,8 @@ class ShellNotificationPoster(private val context: Context = SystemContext.get()
         val title = model.titleArg?.let { string(model.title, it) } ?: run {
             if (model.title == R.string.status_connected) string(model.title, string(R.string.your_mac)) else string(model.title)
         }
-        val text = model.last?.let { string(R.string.last_item, it, model.lastAgo.orEmpty()) }
+        // What to do about a problem comes first; otherwise the last item.
+        val text = model.detail?.let { string(it) } ?: model.last?.let { string(R.string.last_item, it, model.lastAgo.orEmpty()) }
         ensureChannel()
         val builder = Notification.Builder(context, CHANNEL)
             .setSmallIcon(Icon.createWithResource(APP_PACKAGE, R.drawable.ic_stat_kopi))
@@ -82,7 +83,7 @@ class ShellNotificationPoster(private val context: Context = SystemContext.get()
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(Notification.CATEGORY_STATUS)
-        text?.let { builder.setContentText(it) }
+        text?.let { builder.setContentText(it).setStyle(Notification.BigTextStyle().bigText(it)) }
         openApp()?.let { builder.setContentIntent(it) }
         val enqueue = nm.javaClass.methods.first { it.name == "enqueueNotificationWithTag" && it.parameterTypes.size == 6 }
         enqueue.invoke(nm, SHELL, SHELL, TAG, ID, builder.build(), 0)

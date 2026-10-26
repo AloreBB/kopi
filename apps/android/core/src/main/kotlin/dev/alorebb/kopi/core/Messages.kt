@@ -21,11 +21,7 @@ sealed interface KopiMessage
 
 @Serializable
 @SerialName("hello")
-data class Hello(val protocolVersion: Int, val app: String) : KopiMessage
-
-@Serializable
-@SerialName("pair")
-data class PairRequest(val code: String, val name: String) : KopiMessage
+data class Hello(val protocolVersion: Int, val app: String, val name: String) : KopiMessage
 
 @Serializable
 @SerialName("paired")
@@ -88,9 +84,6 @@ enum class ErrorCode {
 
     @SerialName("not_paired")
     NOT_PAIRED,
-
-    @SerialName("invalid_code")
-    INVALID_CODE,
 }
 
 @Serializable

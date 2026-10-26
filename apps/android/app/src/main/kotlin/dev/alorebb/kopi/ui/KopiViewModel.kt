@@ -2,15 +2,12 @@ package dev.alorebb.kopi.ui
 
 import android.app.Application
 import android.content.Context
-import android.os.Build
 import android.os.PowerManager
-import android.provider.Settings
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.alorebb.kopi.daemon.DaemonStatus
 import dev.alorebb.kopi.daemon.IKopiDaemon
-import dev.alorebb.kopi.net.PairingUri
 import dev.alorebb.kopi.shizuku.DaemonLauncher
 import dev.alorebb.kopi.shizuku.ShizukuGate
 import dev.alorebb.kopi.shizuku.ShizukuState
@@ -20,24 +17,14 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.filterNotNull
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeoutOrNull
 
 sealed interface Screen {
     data class Setup(val step: Int) : Screen
     data object Status : Screen
-    data object Scanner : Screen
-    data object Pairing : Screen
-}
-
-sealed interface PairingState {
-    data object InProgress : PairingState
-    data object Failed : PairingState
 }
 
 data class UiState(
@@ -50,11 +37,12 @@ data class UiState(
     val nowMs: Long = System.currentTimeMillis(),
 ) {
     val model: StatusModel get() = StatusModel.render(shizuku, daemonReachable, status, nowMs)
-    val paired: Boolean get() = daemonReachable && status != null && status.state != "unpaired"
+    /** A Mac is stored in the daemon (it pairs on its own with the first Mac it finds). */
+    val paired: Boolean get() = daemonReachable && status?.paired == true
 }
 
 /**
- * The app only configures, pairs and shows status; the daemon does the syncing. HiOS freezes this
+ * The app only configures and shows status; the daemon pairs on its own and does the syncing. HiOS freezes this
  * process in the background, so the daemon is queried only while the UI is visible (every second).
  * Never sees clipboard content: the daemon hands over the preview only.
  */
@@ -70,9 +58,6 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _screen = MutableStateFlow<Screen>(if (setupDone) Screen.Status else Screen.Setup(1))
     val screen: StateFlow<Screen> = _screen.asStateFlow()
-
-    private val _pairing = MutableStateFlow<PairingState>(PairingState.InProgress)
-    val pairing: StateFlow<PairingState> = _pairing.asStateFlow()
 
     private var pollJob: Job? = null
     private var lastLaunchAt = 0L
@@ -105,9 +90,10 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
         _screen.value = screen
     }
 
-    /** Back from the scanner or a failed pairing. */
-    fun leaveScanner() {
-        _screen.value = if (setupDone) Screen.Status else Screen.Setup(3)
+    /** The wizard's last step saw the Mac connected. */
+    fun finishSetup() {
+        setupDone = true
+        _screen.value = Screen.Status
     }
 
     fun startDaemon() {
@@ -121,39 +107,10 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
         daemonCall { it.stop() }
     }
 
-    fun unpair() = daemonCall { it.unpair() }
-
-    /** From the scanner or a `kopi://pair` link. */
-    fun pair(raw: String) {
-        if (PairingUri.parse(raw) == null) {
-            _pairing.value = PairingState.Failed
-            _screen.value = Screen.Pairing
-            return
-        }
-        _pairing.value = PairingState.InProgress
-        _screen.value = Screen.Pairing
-        viewModelScope.launch(Dispatchers.IO) {
-            userStopped = false
-            val daemon = launcher.daemon.value ?: run {
-                if (gate.state.value == ShizukuState.Ready) launcher.start()
-                withTimeoutOrNull(DAEMON_WAIT_MS) { launcher.daemon.filterNotNull().first() }
-            }
-            if (daemon == null) {
-                // No Shizuku or no daemon: the status screen explains which and how to fix it.
-                Log.w(TAG, "pair skipped reason=daemon_unavailable")
-                _screen.value = Screen.Status
-                return@launch
-            }
-            val ok = runCatching { daemon.pair(raw, phoneName()) }.getOrDefault(false)
-            Log.i(TAG, "pair result=$ok")
-            if (ok) {
-                setupDone = true
-                _screen.value = Screen.Status
-                refreshNow()
-            } else {
-                _pairing.value = PairingState.Failed
-            }
-        }
+    /** Forgets the stored Mac; the daemon then finds one and pairs again on its own. */
+    fun unpair() {
+        userStopped = false
+        daemonCall { it.unpair() }
     }
 
     private fun daemonCall(block: (IKopiDaemon) -> Unit) {
@@ -181,10 +138,6 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
             launcher.start()
         }
         val checking = status == null && mayLaunch && now - lastLaunchAt < CHECK_GRACE_MS
-        if (status != null && status.state != "unpaired" && !setupDone) {
-            setupDone = true
-            if (_screen.value is Screen.Setup) _screen.value = Screen.Status
-        }
         _ui.value = UiState(
             shizuku = shizuku,
             daemonReachable = status != null,
@@ -195,9 +148,6 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    private fun phoneName(): String =
-        Settings.Global.getString(getApplication<Application>().contentResolver, Settings.Global.DEVICE_NAME) ?: Build.MODEL
-
     private companion object {
         const val TAG = "Kopi"
         const val KEY_SETUP_DONE = "setup_done"
@@ -205,6 +155,5 @@ class KopiViewModel(app: Application) : AndroidViewModel(app) {
         const val POLL_MS = 1_000L
         const val RELAUNCH_MS = 10_000L
         const val CHECK_GRACE_MS = 5_000L
-        const val DAEMON_WAIT_MS = 10_000L
     }
 }

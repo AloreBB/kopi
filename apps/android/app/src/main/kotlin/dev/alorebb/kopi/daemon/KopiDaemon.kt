@@ -2,7 +2,9 @@ package dev.alorebb.kopi.daemon
 
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Process
+import android.provider.Settings
 import dev.alorebb.kopi.core.Clip
 import dev.alorebb.kopi.core.ClipDataHeader
 import dev.alorebb.kopi.core.ClipOffer
@@ -16,10 +18,10 @@ import dev.alorebb.kopi.core.LocalContent
 import dev.alorebb.kopi.core.SyncEngine
 import dev.alorebb.kopi.net.AndroidNsdDiscovery
 import dev.alorebb.kopi.net.OkHttpConnector
-import dev.alorebb.kopi.net.PairingUri
 import dev.alorebb.kopi.net.PeerClient
 import dev.alorebb.kopi.net.PeerState
 import dev.alorebb.kopi.net.PinnedTls
+import dev.alorebb.kopi.net.Vpn
 import dev.alorebb.kopi.shizuku.ShizukuState
 import dev.alorebb.kopi.ui.StatusModel
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -31,7 +33,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.concurrent.Executors
@@ -53,6 +54,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
     private val clipboard: ShellClipboard?
     private val peer: PeerClient
     private val notifier = ShellNotifier(log, ShellNotificationPoster())
+    private val connectivity: ConnectivityManager?
 
     private class Download(val mime: String, val size: Int) {
         val bytes = ByteArrayOutputStream(size)
@@ -68,6 +70,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
         identity = DaemonIdentity().loadOrCreate()
         log.event("daemon started uid=${Process.myUid()}")
         val context = SystemContext.get()
+        connectivity = runCatching { context.getSystemService(ConnectivityManager::class.java) }.getOrNull()
         clipboard = runCatching { ShellClipboard(context, scope, log).also { it.start() } }
             .onFailure { log.event("clipboard unavailable reason=${it.javaClass.simpleName}") }
             .getOrNull()
@@ -75,7 +78,10 @@ class KopiDaemon : IKopiDaemon.Stub() {
             scope = scope,
             store = state,
             nsd = AndroidNsdDiscovery(context),
-            connector = OkHttpConnector { fp -> PinnedTls.sslContext(fp, identity.keyStore, DaemonIdentity.ALIAS, DaemonIdentity.PASSWORD) },
+            connector = OkHttpConnector { fp, onSeen ->
+                PinnedTls.sslContext(fp, identity.keyStore, DaemonIdentity.ALIAS, DaemonIdentity.PASSWORD, onSeen)
+            },
+            phoneName = { phoneName(context) },
             log = { log.event(it) },
         )
         wire()
@@ -86,7 +92,8 @@ class KopiDaemon : IKopiDaemon.Stub() {
                 delay(NOTIFY_TICK_MS)   // keeps "hace N s" roughly current; posts only when the text changes
             }
         }
-        if (state.read().macFingerprint != null) peer.start()
+        // With no Mac stored, the client looks for one and pairs on its own.
+        peer.start()
     }
 
     private fun wire() {
@@ -187,7 +194,7 @@ class KopiDaemon : IKopiDaemon.Stub() {
 
     private fun watchNetwork(context: android.content.Context) {
         runCatching {
-            context.getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            checkNotNull(connectivity).registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) = peer.onNetworkChanged()
             })
         }.onFailure { log.event("network watch unavailable reason=${it.javaClass.simpleName}") }
@@ -200,27 +207,23 @@ class KopiDaemon : IKopiDaemon.Stub() {
 
     private fun snapshot(peerState: PeerState = peer.state.value): DaemonStatus {
         val saved = state.read()
-        return DaemonStatus.of(peerState, saved.macFingerprint != null, saved.macName, engine.lastItem, clipboard != null)
+        val vpn = connectivity?.let(Vpn::active) ?: false
+        return DaemonStatus.of(peerState, saved.macFingerprint != null, saved.macName, engine.lastItem, clipboard != null, vpn)
     }
+
+    /** The name the user gave the phone ("Tecno Camon 40 Pro"), shown on the Mac. */
+    private fun phoneName(context: android.content.Context): String =
+        runCatching { Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME) }.getOrNull()
+            ?.takeIf { it.isNotBlank() } ?: Build.MODEL
 
     // MARK: - IKopiDaemon (binder threads)
 
     override fun status(): String = runBlocking { withContext(engineThread) { snapshot() } }.toJson()
 
-    override fun pair(pairingUri: String, phoneName: String): Boolean {
-        val uri = PairingUri.parse(pairingUri) ?: return false
-        val result = runBlocking { withTimeoutOrNull(PAIR_TIMEOUT_MS) { peer.pair(uri, phoneName) } }
-        val name = result?.getOrNull() ?: run {
-            log.event("pair failed reason=${result?.exceptionOrNull()?.javaClass?.simpleName ?: "Timeout"}")
-            return false
-        }
-        log.event("paired mac=$name")
-        return true
-    }
-
+    /** Forgets the Mac; the client then looks for one and pairs again on its own. */
     override fun unpair() {
         state.clear()
-        peer.stop()
+        peer.restart()
         log.event("unpaired")
         scope.launch { notifyStatus() }
     }
@@ -235,7 +238,6 @@ class KopiDaemon : IKopiDaemon.Stub() {
     override fun destroy() = stop()
 
     private companion object {
-        const val PAIR_TIMEOUT_MS = 20_000L
         const val NOTIFY_TICK_MS = 10_000L
     }
 }

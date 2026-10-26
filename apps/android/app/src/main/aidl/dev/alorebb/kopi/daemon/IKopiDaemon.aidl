@@ -5,10 +5,9 @@ interface IKopiDaemon {
     // JSON of DaemonStatus.
     String status() = 1;
 
-    // Blocks until the handshake ends (<= 15 s); call off the main thread.
-    boolean pair(String pairingUri, String phoneName) = 2;
+    // Code 2 was pair(pairingUri, phoneName): pairing is automatic now. Do not reuse it.
 
-    // Deletes state.json and disconnects.
+    // Deletes state.json, disconnects and looks for a Mac to pair with again.
     void unpair() = 3;
 
     // Stops syncing and ends the process.
