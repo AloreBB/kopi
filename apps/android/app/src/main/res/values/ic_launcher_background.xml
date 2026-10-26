@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Mid-point of the icon gradient; used where a flat icon background is needed. -->
+    <color name="ic_launcher_background">#4F86F0</color>
+</resources>
