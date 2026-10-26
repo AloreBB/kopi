@@ -1,6 +1,6 @@
 # With only Command Line Tools (no Xcode), Swift Testing needs its framework dir on the search path and rpath.
 CLT_FW := /Library/Developer/CommandLineTools/Library/Developer/Frameworks
-SWIFT_TEST_FLAGS := $(if $(findstring CommandLineTools,$(shell xcode-select -p)),-Xswiftc -F -Xswiftc $(CLT_FW) -Xlinker -rpath -Xlinker $(CLT_FW),)
+SWIFT_TEST_FLAGS := $(if $(findstring CommandLineTools,$(shell xcode-select -p 2>/dev/null)),-Xswiftc -F -Xswiftc $(CLT_FW) -Xlinker -rpath -Xlinker $(CLT_FW),)
 
 .PHONY: mac mac-test run-mac android android-test install-android test fixtures-check
 

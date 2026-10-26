@@ -212,9 +212,17 @@ class KopiDaemon : IKopiDaemon.Stub() {
     }
 
     /** The name the user gave the phone ("Tecno Camon 40 Pro"), shown on the Mac. */
+    // The shell process can't always read Settings.Global, so fall back to the
+    // marketing name property before the raw model code ("TECNO CM6").
     private fun phoneName(context: android.content.Context): String =
         runCatching { Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME) }.getOrNull()
-            ?.takeIf { it.isNotBlank() } ?: Build.MODEL
+            ?.takeIf { it.isNotBlank() }
+            ?: systemProperty("ro.product.marketname")?.takeIf { it.isNotBlank() }
+            ?: Build.MODEL
+
+    private fun systemProperty(key: String): String? = runCatching {
+        Class.forName("android.os.SystemProperties").getMethod("get", String::class.java).invoke(null, key) as String
+    }.getOrNull()
 
     // MARK: - IKopiDaemon (binder threads)
 

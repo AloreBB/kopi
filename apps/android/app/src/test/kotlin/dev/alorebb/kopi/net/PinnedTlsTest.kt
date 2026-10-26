@@ -75,6 +75,8 @@ class PinnedTlsTest {
                         s.startHandshake()
                         s.outputStream.write(42)
                         s.outputStream.flush()
+                        // Wait for the client's ack so closing can't race its read (TLS 1.3 on Linux).
+                        s.inputStream.read()
                     }
                 }
             }
@@ -87,6 +89,8 @@ class PinnedTlsTest {
             (ctx.socketFactory.createSocket("127.0.0.1", good.localPort) as SSLSocket).use { s ->
                 s.startHandshake()
                 assertEquals(42, s.inputStream.read())
+                s.outputStream.write(1)
+                s.outputStream.flush()
             }
             goodThread.join(5_000)
         }
